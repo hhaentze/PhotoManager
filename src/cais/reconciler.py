@@ -4,6 +4,14 @@ from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Set, Tuple
 
 import blake3  # type: ignore
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,32 +58,60 @@ def scan_and_reconcile(root_dir: Path | str, known_state: Dict[str, Tuple[float,
     seen_paths: Set[str] = set()
     unchanged_count = 0
 
-    for entry in fast_scandir(root):
-        entry_path = Path(entry.path)
-        rel_path = Path(entry.path).relative_to(root).as_posix()
-        seen_paths.add(rel_path)
+    # temporarily store files that need hashing here
+    files_to_hash: List[Tuple[str, Path, int, float]] = []
 
-        try:
-            # THIS is the magic of scandir: stat() is often cached here, saving an I/O call
-            stat = entry.stat(follow_symlinks=False)
-            mtime, size = stat.st_mtime, stat.st_size
+    # PHASE 1: Fast Discovery
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,  # Disappears when done
+    ) as progress:
+        scan_task = progress.add_task("[cyan]Scanning directory structure...", total=None)
 
-        except OSError as e:
-            logger.warning(f"[!] Warning: Could not read {entry_path} - {e}")
-            continue
+        for entry in fast_scandir(root):
+            entry_path = Path(entry.path)
+            rel_path = entry_path.relative_to(root).as_posix()
+            seen_paths.add(rel_path)
 
-        # O(1) Check against the Database state
-        known_file = known_state.get(rel_path)
-        if known_file and known_file == (mtime, size):
-            unchanged_count += 1
-            continue
+            try:
+                stat = entry.stat(follow_symlinks=False)
+                mtime, size = stat.st_mtime, stat.st_size
+            except OSError as e:
+                logger.warning(f"[!] Warning: Could not read {entry_path} - {e}")
+                continue
 
-        # File is New or Modified: time to hash
-        try:
-            file_hash = compute_blake3(entry_path)
-            to_upsert.append((rel_path, file_hash, size, mtime))
-        except OSError as e:
-            logger.warning(f"[!] Warning: Could not read/hash {entry_path} - {e}")
+            # O(1) Check against the Database state
+            known_file = known_state.get(rel_path)
+            if known_file and known_file == (mtime, size):
+                unchanged_count += 1
+            else:
+                # Needs hashing! Add to our queue.
+                files_to_hash.append((rel_path, entry_path, size, mtime))
+
+            # Update the spinner text
+            progress.update(scan_task, description=f"[cyan]Scanning directory... found {len(seen_paths)} files")
+
+    # PHASE 2: Hashing with ETA
+    if files_to_hash:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            hash_task = progress.add_task("[green]Hashing new/modified files...", total=len(files_to_hash))
+
+            for rel_path, entry_path, size, mtime in files_to_hash:
+                try:
+                    file_hash = compute_blake3(entry_path)
+                    to_upsert.append((rel_path, file_hash, size, mtime))
+                except OSError as e:
+                    logger.warning(f"[!] Warning: Could not read/hash {entry_path} - {e}")
+
+                # Advance the progress bar by 1
+                progress.advance(hash_task)
 
     # Fast set difference to find files in DB that are no longer on disk
     missing_on_disk = list(set(known_state.keys()) - seen_paths)
@@ -91,17 +127,41 @@ def check_external_path(external_dir: Path, known_hashes: set[str]) -> tuple[lis
     known_files: list[str] = []
     unknown_files: list[str] = []
 
-    for entry in fast_scandir(external_dir):
-        file_path = Path(entry.path)
-        try:
-            file_hash = compute_blake3(file_path)
+    all_files: list[Path] = []
 
-            # Instant O(1) memory lookup, zero database I/O!
-            if file_hash in known_hashes:
-                known_files.append(file_path.as_posix())
-            else:
-                unknown_files.append(file_path.as_posix())
-        except OSError as e:
-            logger.warning(f"[!] Warning: Could not read/hash {file_path} - {e}")
+    # PHASE 1: Discovery
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        scan_task = progress.add_task("[cyan]Discovering external files...", total=None)
+        for entry in fast_scandir(external_dir):
+            all_files.append(Path(entry.path))
+            progress.update(scan_task, description=f"[cyan]Discovering external files... found {len(all_files)}")
+
+    # PHASE 2: Hashing Check
+    if all_files:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            hash_task = progress.add_task("[green]Analyzing external files...", total=len(all_files))
+
+            for file_path in all_files:
+                try:
+                    file_hash = compute_blake3(file_path)
+
+                    if file_hash in known_hashes:
+                        known_files.append(file_path.as_posix())
+                    else:
+                        unknown_files.append(file_path.as_posix())
+                except OSError as e:
+                    logger.warning(f"[!] Warning: Could not read/hash {file_path} - {e}")
+
+                progress.advance(hash_task)
 
     return known_files, unknown_files

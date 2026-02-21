@@ -74,8 +74,7 @@ def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool) -> None:
 
         console.print(f"[*] Found [cyan]{len(known_state)}[/cyan] known files in database.")
 
-        with console.status("[bold blue]Scanning disk and hashing modified files..."):
-            result = scan_and_reconcile(root_dir, known_state)
+        result = scan_and_reconcile(root_dir, known_state)
 
         # Print Summary Panel
         summary_table = Table(show_header=False, box=None)
@@ -157,8 +156,7 @@ def handle_check_path(args, db_file: Path, root_path: Path):
         with console.status("[bold blue]Loading known database hashes into memory..."):
             known_hashes = db.get_all_hashes()
 
-        with console.status(f"[bold blue]Scanning external path: {ext_path.resolve()}..."):
-            known_files, unknown_files = check_external_path(ext_path, known_hashes)
+        known_files, unknown_files = check_external_path(ext_path, known_hashes)
 
         console.print("\n[bold]External Path Check Results[/bold]")
         console.print(f"[-] Files already safely in your database: [green]{len(known_files)}[/green]")

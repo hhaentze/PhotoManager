@@ -1,15 +1,26 @@
 import sqlite3
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 class IndexDB:
-    def __init__(self, db_path: Path | str, db_name: str):
+    def __init__(self, db_path: Path | str, db_name: Optional[str] = None):
         self.db_path = Path(db_path)
-        # isolation_level=None enables autocommit, avoiding manual conn.commit() for simple tools
-        self.conn = sqlite3.connect(self.db_path, isolation_level=None)
-        self._init_schema()
-        self.set_metadata("name", db_name)
+        file_exists = self.db_path.exists()
+
+        if db_name is not None:
+            # Creation mode
+            if file_exists:
+                raise FileExistsError(f"Database already exists at {self.db_path}")
+            self.conn = sqlite3.connect(self.db_path, isolation_level=None)
+            self._init_schema()
+            self.set_metadata("name", db_name)
+
+        else:
+            # Load mode
+            if not file_exists:
+                raise FileNotFoundError("Database name not specified")
+            self.conn = sqlite3.connect(self.db_path, isolation_level=None)
 
     def _init_schema(self) -> None:
         """Creates the schema if it doesn't exist."""
