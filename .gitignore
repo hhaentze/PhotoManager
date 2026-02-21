@@ -1,0 +1,126 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# SLURM
+*.sh
+
+# Cais
+.*.db
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# PyCharm
+.idea/
+
+# Data files (images, segmentations)
+*.nii
+*.nii.gz
+*.dcm
+*.mha
+*.mhd
+*.nrrd
+*.csv
+*.parquet
+
+# Trained models (usually too large for git)
+*.pkl
+*.pth
+*.pt
+*.h5
+*.ckpt
+models/
+checkpoints/
+*.config.json
+
+# Graphviz
+*.dot
+*.gv
+
+# Results and outputs
+results/
+output/
+outputs/
+experiments/
+notebooks/
+*.png
+*.jpg
+*.pdf
+*.txt
+*.html
+roc_curve.png
+confusion_matrix.png
+metrics.txt
+
+# Logs
+*.log
+logs/
+wandb/
+tb_logs/
+tensorboard/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+temp*
+old*
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre
+.pyre/
+
+# Distribution / packaging
+*.tar.gz
+*.whl
+
+# Temporary files
+tmp/
+temp/
+*.tmp
