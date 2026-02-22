@@ -9,7 +9,7 @@ from rich.tree import Tree
 
 from cais.db import IndexDB
 from cais.logger import setup_logging
-from cais.reconciler import check_external_path, scan_and_reconcile
+from cais.reconciler import scan_and_reconcile
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -73,7 +73,7 @@ def report_duplicates(db: IndexDB, do_perceptual: bool = False) -> None:
         console.print(f"[dim]* Too many {dupe_type} to display. Details written to {log_path.resolve()}[/dim]")
 
 
-def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool, do_perceptual: bool = False) -> None:
+def run_scan(db_path: Path, root_dir: Path, dry_run: bool = True, do_perceptual: bool = False) -> None:
     """Orchestrates the disk walk, reconciliation, and database updates."""
     db = get_db_or_exit(db_path)
 
@@ -130,13 +130,18 @@ def handle_init(args, db_file: Path, root_path: Path):
 
 
 def handle_scan(args, db_file: Path, root_path: Path):
+
+    if args.update and args.path is not None:
+        console.print("[bold red]Error:[/bold red] External Paths cannot be added to database.")
+        sys.exit(1)
+
     console.print("[bold]Scanning for differences (dry run)...[/bold]")
-    run_scan_or_update(root_path, db_file, dry_run=True, do_perceptual=args.perceptual)
-
-
-def handle_update(args, db_file: Path, root_path: Path):
-    console.print("[bold]Scanning and updating database...[/bold]")
-    run_scan_or_update(root_path, db_file, dry_run=False, do_perceptual=args.perceptual)
+    run_scan(
+        db_file,
+        root_dir=root_path if args.path is None else args.path,
+        dry_run=not args.update,
+        do_perceptual=args.perceptual,
+    )
 
 
 def handle_status(args, db_file: Path, root_path: Path):
@@ -158,36 +163,6 @@ def handle_status(args, db_file: Path, root_path: Path):
         db.close()
 
 
-def handle_check_path(args, db_file: Path, root_path: Path):
-    ext_path = Path(args.path)
-    if not ext_path.exists() or not ext_path.is_dir():
-        console.print(f"[bold red]Error:[/bold red] Path {ext_path} does not exist or is not a directory.")
-        sys.exit(1)
-
-    db = get_db_or_exit(db_file)
-    try:
-        with console.status("[bold blue]Loading known database hashes into memory..."):
-            known_hashes = db.get_all_hashes()
-            known_phashes = db.get_all_phashes()
-
-        known_files, unknown_files = check_external_path(
-            ext_path, known_hashes, known_phashes, do_perceptual=args.perceptual
-        )
-
-        console.print("\n[bold]External Path Check Results[/bold]")
-        console.print(f"[-] Files already safely in your database: [green]{len(known_files)}[/green]")
-        console.print(f"[-] New, unbacked-up files found: [yellow]{len(unknown_files)}[/yellow]")
-
-        if unknown_files:
-            log_path = Path("cais_unknown_external.log")
-            with open(log_path, "w", encoding="utf-8") as f:
-                for p in unknown_files:
-                    f.write(f"{p}\n")
-            console.print(f"[dim]* List of unbacked-up files written to {log_path.resolve()}[/dim]")
-    finally:
-        db.close()
-
-
 def main():
     setup_logging(level=logging.INFO)  # Keep logging for file-based debug traces if needed
 
@@ -200,20 +175,13 @@ def main():
     parser_init.set_defaults(func=handle_init)
 
     parser_scan = subparsers.add_parser("scan", help="Check for changes without updating DB")
+    parser_scan.add_argument("path", nargs="?", default=None, help="External path to check")
     parser_scan.add_argument("--perceptual", action="store_true", help="Calculate perceptual hashes for images")
+    parser_scan.add_argument("--update", action="store_true", help="Update the database")
     parser_scan.set_defaults(func=handle_scan)
-
-    parser_update = subparsers.add_parser("update", help="Scan and update the database")
-    parser_update.add_argument("--perceptual", action="store_true", help="Calculate perceptual hashes for images")
-    parser_update.set_defaults(func=handle_update)
 
     parser_status = subparsers.add_parser("status", help="Print database statistics")
     parser_status.set_defaults(func=handle_status)
-
-    parser_check = subparsers.add_parser("check-path", help="Compare external folder against own entries")
-    parser_check.add_argument("path", help="External path to check")
-    parser_check.add_argument("--perceptual", action="store_true", help="Check for visual duplicates using pHash")
-    parser_check.set_defaults(func=handle_check_path)
 
     args = parser.parse_args()
 
