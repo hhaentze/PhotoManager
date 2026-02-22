@@ -28,7 +28,8 @@ class IndexDB:
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS assets (
                 hash TEXT PRIMARY KEY,
-                size INTEGER NOT NULL
+                size INTEGER NOT NULL,
+                phash TEXT
             );
             CREATE TABLE IF NOT EXISTS locations (
                 path TEXT PRIMARY KEY,
@@ -51,13 +52,13 @@ class IndexDB:
         return row[0] if row else None
 
     def get_known_state(self) -> Dict[str, Tuple[float, int]]:
-        """Returns a mapping of {path: (mtime, size)} for O(1) reconciliation."""
+        """Returns a mapping of {path: (mtime, size, phash)} for O(1) reconciliation."""
         cursor = self.conn.execute("""
-            SELECT l.path, l.mtime, a.size 
+            SELECT l.path, l.mtime, a.size, a.phash, a.hash
             FROM locations l 
             JOIN assets a ON l.hash = a.hash
         """)
-        return {row[0]: (row[1], row[2]) for row in cursor}
+        return {row[0]: (row[1], row[2], row[3], row[4]) for row in cursor}
 
     def get_status_stats(self) -> dict:
         """Returns aggregated database statistics."""
@@ -94,6 +95,16 @@ class IndexDB:
                 [(row[0], row[1], row[3]) for row in file_data],
             )
 
+    def update_phashes(self, phash_data: List[Tuple[str, str]]) -> None:
+        """Batch updates perceptual hashes for existing assets. Expected tuple: (hash, phash)"""
+        with self.conn:
+            self.conn.executemany(
+                """
+                UPDATE assets SET phash = ? WHERE hash = ?;
+                """,
+                [(row[1], row[0]) for row in phash_data],
+            )
+
     def remove_paths(self, paths: List[str]) -> None:
         """Removes paths from the index and cleans up orphaned assets."""
         with self.conn:
@@ -105,6 +116,11 @@ class IndexDB:
     def get_all_hashes(self) -> set[str]:
         """Returns a set of all known asset hashes for fast O(1) in-memory lookups."""
         cursor = self.conn.execute("SELECT hash FROM assets")
+        return {row[0] for row in cursor}
+
+    def get_all_phashes(self) -> set[str]:
+        """Returns a set of all known asset hashes for fast O(1) in-memory lookups."""
+        cursor = self.conn.execute("SELECT phash FROM assets WHERE phash IS NOT NULL")
         return {row[0] for row in cursor}
 
     def get_missing_hashes(self, target_db_path: Path | str) -> Set[str]:
@@ -131,6 +147,27 @@ class IndexDB:
         dupes: dict[str, list[str]] = {}
         for file_hash, path in cursor:
             dupes.setdefault(file_hash, []).append(path)
+        return dupes
+
+    def get_perceptual_duplicates(self) -> dict[str, list[str]]:
+        """Returns a mapping of {phash: [path1, path2, ...]} for visually similar assets."""
+        cursor = self.conn.execute("""
+            SELECT a.phash, l.path 
+            FROM locations l
+            JOIN assets a ON l.hash = a.hash
+            WHERE a.phash IS NOT NULL AND a.phash IN (
+                SELECT a2.phash 
+                FROM locations l2 
+                JOIN assets a2 ON l2.hash = a2.hash
+                WHERE a2.phash IS NOT NULL
+                GROUP BY a2.phash 
+                HAVING COUNT(l2.path) > 1
+            )
+            ORDER BY a.phash;
+        """)
+        dupes: dict[str, list[str]] = {}
+        for phash, path in cursor:
+            dupes.setdefault(phash, []).append(path)
         return dupes
 
     def get_path_for_hash(self, file_hash: str) -> str | None:

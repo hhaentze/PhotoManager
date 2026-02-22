@@ -32,11 +32,20 @@ def get_db_or_exit(db_file: Path) -> IndexDB:
     return IndexDB(db_file)
 
 
-def report_duplicates(db: IndexDB) -> None:
+def report_duplicates(db: IndexDB, do_perceptual: bool = False) -> None:
     """Handles the duplicate presentation logic using rich Trees."""
-    dupes = db.get_duplicates()
+
+    if do_perceptual:
+        dupes = db.get_perceptual_duplicates()
+        dupe_type = "visual duplicates"
+        color = "magenta"
+    else:
+        dupes = db.get_duplicates()
+        dupe_type = "exact binary duplicates"
+        color = "cyan"
+
     if not dupes:
-        console.print("\n[bold green]✓ No duplicate files found![/bold green]")
+        console.print(f"\n[bold green]✓ No {dupe_type} found![/bold green]")
         return
 
     total_dupe_files = sum(len(paths) for paths in dupes.values())
@@ -44,12 +53,12 @@ def report_duplicates(db: IndexDB) -> None:
     wasted_space_files = total_dupe_files - unique_assets
 
     console.print(
-        f"\n[bold yellow]! Found {wasted_space_files} redundant files across {unique_assets} unique assets.[/bold yellow]"
+        f"\n[bold yellow]! Found {wasted_space_files} redundant files across {unique_assets} unique {dupe_type}.[/bold yellow]"
     )
 
     if wasted_space_files <= 10:
         for file_hash, paths in dupes.items():
-            tree = Tree(f"📄 [bold cyan]{file_hash[:8]}...[/bold cyan]")
+            tree = Tree(f"📄 [bold {color}]{file_hash[:8]}...[/bold {color}]")
             for p in paths:
                 tree.add(f"[dim]{p}[/dim]")
             console.print(tree)
@@ -61,10 +70,10 @@ def report_duplicates(db: IndexDB) -> None:
                 for p in paths:
                     f.write(f"  {p}\n")
                 f.write("\n")
-        console.print(f"[dim]* Too many duplicates to display. Details written to {log_path.resolve()}[/dim]")
+        console.print(f"[dim]* Too many {dupe_type} to display. Details written to {log_path.resolve()}[/dim]")
 
 
-def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool) -> None:
+def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool, do_perceptual: bool = False) -> None:
     """Orchestrates the disk walk, reconciliation, and database updates."""
     db = get_db_or_exit(db_path)
 
@@ -74,7 +83,7 @@ def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool) -> None:
 
         console.print(f"[*] Found [cyan]{len(known_state)}[/cyan] known files in database.")
 
-        result = scan_and_reconcile(root_dir, known_state)
+        result = scan_and_reconcile(root_dir, known_state, do_perceptual)
 
         # Print Summary Panel
         summary_table = Table(show_header=False, box=None)
@@ -82,6 +91,7 @@ def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool) -> None:
         summary_table.add_column("Value", style="cyan")
         summary_table.add_row("[-] Unchanged files:", str(result.unchanged_count))
         summary_table.add_row("[-] New/Modified files to hash:", str(len(result.to_upsert)))
+        summary_table.add_row("[-] New perceptual hashes:", str(len(result.to_upsert_phash)))
         summary_table.add_row("[-] Missing files (removed from disk):", str(len(result.missing_on_disk)))
         console.print(summary_table)
 
@@ -91,12 +101,15 @@ def run_scan_or_update(root_dir: Path, db_path: Path, dry_run: bool) -> None:
             if result.to_upsert:
                 console.print(f"[*] Committing [green]{len(result.to_upsert)}[/green] hashed files to database...")
                 db.upsert_files(result.to_upsert)
+            if do_perceptual and result.to_upsert_phash:
+                console.print(f"[*] Committing [magenta]{len(result.to_upsert_phash)}[/magenta] perceptual hashes...")
+                db.update_phashes(result.to_upsert_phash)
             if result.missing_on_disk:
                 console.print(f"[*] Removing [red]{len(result.missing_on_disk)}[/red] orphaned paths from database...")
                 db.remove_paths(result.missing_on_disk)
             console.print("[bold green]✓ Update complete.[/bold green]")
 
-        report_duplicates(db)
+        report_duplicates(db, do_perceptual)
 
     finally:
         db.close()
@@ -118,12 +131,12 @@ def handle_init(args, db_file: Path, root_path: Path):
 
 def handle_scan(args, db_file: Path, root_path: Path):
     console.print("[bold]Scanning for differences (dry run)...[/bold]")
-    run_scan_or_update(root_path, db_file, dry_run=True)
+    run_scan_or_update(root_path, db_file, dry_run=True, do_perceptual=args.perceptual)
 
 
 def handle_update(args, db_file: Path, root_path: Path):
     console.print("[bold]Scanning and updating database...[/bold]")
-    run_scan_or_update(root_path, db_file, dry_run=False)
+    run_scan_or_update(root_path, db_file, dry_run=False, do_perceptual=args.perceptual)
 
 
 def handle_status(args, db_file: Path, root_path: Path):
@@ -155,8 +168,11 @@ def handle_check_path(args, db_file: Path, root_path: Path):
     try:
         with console.status("[bold blue]Loading known database hashes into memory..."):
             known_hashes = db.get_all_hashes()
+            known_phashes = db.get_all_phashes()
 
-        known_files, unknown_files = check_external_path(ext_path, known_hashes)
+        known_files, unknown_files = check_external_path(
+            ext_path, known_hashes, known_phashes, do_perceptual=args.perceptual
+        )
 
         console.print("\n[bold]External Path Check Results[/bold]")
         console.print(f"[-] Files already safely in your database: [green]{len(known_files)}[/green]")
@@ -173,7 +189,7 @@ def handle_check_path(args, db_file: Path, root_path: Path):
 
 
 def main():
-    setup_logging(level=logging.DEBUG)  # Keep logging for file-based debug traces if needed
+    setup_logging(level=logging.INFO)  # Keep logging for file-based debug traces if needed
 
     parser = argparse.ArgumentParser(description="CAIS: Content-Addressed Indexing System for Media")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -184,9 +200,11 @@ def main():
     parser_init.set_defaults(func=handle_init)
 
     parser_scan = subparsers.add_parser("scan", help="Check for changes without updating DB")
+    parser_scan.add_argument("--perceptual", action="store_true", help="Calculate perceptual hashes for images")
     parser_scan.set_defaults(func=handle_scan)
 
     parser_update = subparsers.add_parser("update", help="Scan and update the database")
+    parser_update.add_argument("--perceptual", action="store_true", help="Calculate perceptual hashes for images")
     parser_update.set_defaults(func=handle_update)
 
     parser_status = subparsers.add_parser("status", help="Print database statistics")
@@ -194,6 +212,7 @@ def main():
 
     parser_check = subparsers.add_parser("check-path", help="Compare external folder against own entries")
     parser_check.add_argument("path", help="External path to check")
+    parser_check.add_argument("--perceptual", action="store_true", help="Check for visual duplicates using pHash")
     parser_check.set_defaults(func=handle_check_path)
 
     args = parser.parse_args()

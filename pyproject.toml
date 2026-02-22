@@ -16,7 +16,8 @@ dependencies = [
     "pymediainfo",   # extract timestamp from videos
     "blake3>=0.4.1", # fast file hashing
     "rich>=13.7.0",  # better looking CLI output
-
+    "ImageHash",
+    "pillow",
 ]
 
 [project.optional-dependencies]

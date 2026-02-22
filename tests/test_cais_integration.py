@@ -97,7 +97,8 @@ def test_mode_1_full_lifecycle(workspace: Path):
     create_file(ext_dir / "vacation.jpg", "image_data_C")
 
     known_hashes = db.get_all_hashes()
-    known_files, unknown_files = check_external_path(ext_dir, known_hashes)
+    known_phashes = db.get_all_phashes()
+    known_files, unknown_files = check_external_path(ext_dir, known_hashes, known_phashes)
 
     assert len(known_files) == 1
     assert len(unknown_files) == 1
