@@ -1,6 +1,15 @@
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+
+
+@dataclass
+class DataPoint:
+    hash: str
+    phash: Optional[str]
+    size: int
+    mtime: str
 
 
 class IndexDB:
@@ -51,14 +60,14 @@ class IndexDB:
         row = cursor.fetchone()
         return row[0] if row else None
 
-    def get_known_state(self) -> Dict[str, Tuple[float, int]]:
+    def get_known_state(self) -> Dict[str, DataPoint]:
         """Returns a mapping of {path: (mtime, size, phash)} for O(1) reconciliation."""
         cursor = self.conn.execute("""
-            SELECT l.path, l.mtime, a.size, a.phash, a.hash
+            SELECT l.path, a.hash, a.phash, a.size, l.mtime
             FROM locations l 
             JOIN assets a ON l.hash = a.hash
         """)
-        return {row[0]: (row[1], row[2], row[3], row[4]) for row in cursor}
+        return {row[0]: DataPoint(row[1], row[2], row[3], row[4]) for row in cursor}
 
     def get_status_stats(self) -> dict:
         """Returns aggregated database statistics."""
