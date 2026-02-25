@@ -1,7 +1,8 @@
 import sqlite3
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -10,6 +11,13 @@ class DataPoint:
     phash: Optional[str]
     size: int
     mtime: str
+
+
+@dataclass
+class DuplicateGroup:
+    original: Optional[str]
+    duplicates: list[str]
+    match_type: str  # "hash" or "phash"
 
 
 class IndexDB:
@@ -122,68 +130,63 @@ class IndexDB:
                 DELETE FROM assets WHERE hash NOT IN (SELECT hash FROM locations);
             """)
 
-    def get_all_hashes(self) -> set[str]:
-        """Returns a set of all known asset hashes for fast O(1) in-memory lookups."""
-        cursor = self.conn.execute("SELECT hash FROM assets")
-        return {row[0] for row in cursor}
+    def get_all_duplicates(self) -> dict[str, DuplicateGroup]:
+        """Return {hash_or_phash: DuplicateGroup} for exact + perceptual duplicates."""
 
-    def get_all_phashes(self) -> set[str]:
-        """Returns a set of all known asset hashes for fast O(1) in-memory lookups."""
-        cursor = self.conn.execute("SELECT phash FROM assets WHERE phash IS NOT NULL")
-        return {row[0] for row in cursor}
+        duplicates: dict[str, DuplicateGroup] = {}
 
-    def get_missing_hashes(self, target_db_path: Path | str) -> Set[str]:
-        """Cross-database query: Returns hashes present here, but missing in target."""
-        self.conn.execute("ATTACH DATABASE ? AS target", (str(target_db_path),))
+        # --- Exact duplicates (same hash, multiple paths) ---
         cursor = self.conn.execute("""
-            SELECT hash FROM main.assets 
-            EXCEPT 
-            SELECT hash FROM target.assets;
-        """)
-        missing = {row[0] for row in cursor}
-        self.conn.execute("DETACH DATABASE target")
-        return missing
-
-    def get_duplicates(self) -> dict[str, list[str]]:
-        """Returns a mapping of {hash: [path1, path2, ...]} for duplicated assets."""
-        cursor = self.conn.execute("""
-            SELECT hash, path FROM locations
-            WHERE hash IN (
-                SELECT hash FROM locations GROUP BY hash HAVING COUNT(path) > 1
-            )
-            ORDER BY hash;
-        """)
-        dupes: dict[str, list[str]] = {}
-        for file_hash, path in cursor:
-            dupes.setdefault(file_hash, []).append(path)
-        return dupes
-
-    def get_perceptual_duplicates(self) -> dict[str, list[str]]:
-        """Returns a mapping of {phash: [path1, path2, ...]} for visually similar assets."""
-        cursor = self.conn.execute("""
-            SELECT a.phash, l.path 
+            SELECT l.hash, l.path
             FROM locations l
-            JOIN assets a ON l.hash = a.hash
-            WHERE a.phash IS NOT NULL AND a.phash IN (
-                SELECT a2.phash 
-                FROM locations l2 
-                JOIN assets a2 ON l2.hash = a2.hash
-                WHERE a2.phash IS NOT NULL
-                GROUP BY a2.phash 
-                HAVING COUNT(l2.path) > 1
+            WHERE l.hash IN (
+                SELECT hash
+                FROM locations
+                GROUP BY hash
+                HAVING COUNT(*) > 1
+            )
+            ORDER BY l.hash;
+        """)
+
+        exact_map: dict[str, list[str]] = defaultdict(list)
+        for h, path in cursor:
+            exact_map[h].append(path)
+
+        for h, paths in exact_map.items():
+            duplicates[h] = DuplicateGroup(
+                original=None,
+                duplicates=paths,
+                match_type="hash",
+            )
+
+        # --- Perceptual duplicates (same phash, different hashes) ---
+        cursor = self.conn.execute("""
+            SELECT a.phash, l.path
+            FROM assets a
+            JOIN locations l ON l.hash = a.hash
+            WHERE a.phash IS NOT NULL
+            AND a.phash IN (
+                SELECT phash
+                FROM assets
+                WHERE phash IS NOT NULL
+                GROUP BY phash
+                HAVING COUNT(DISTINCT hash) > 1
             )
             ORDER BY a.phash;
         """)
-        dupes: dict[str, list[str]] = {}
-        for phash, path in cursor:
-            dupes.setdefault(phash, []).append(path)
-        return dupes
 
-    def get_path_for_hash(self, file_hash: str) -> str | None:
-        """Returns one valid path for a given hash to facilitate file copying."""
-        cursor = self.conn.execute("SELECT path FROM locations WHERE hash = ? LIMIT 1", (file_hash,))
-        row = cursor.fetchone()
-        return row[0] if row else None
+        phash_map: dict[str, list[str]] = defaultdict(list)
+        for ph, path in cursor:
+            phash_map[ph].append(path)
+
+        for ph, paths in phash_map.items():
+            duplicates[ph] = DuplicateGroup(
+                original=None,
+                duplicates=paths,
+                match_type="phash",
+            )
+
+        return duplicates
 
     def close(self) -> None:
         self.conn.close()

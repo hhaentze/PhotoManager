@@ -16,7 +16,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from cais.db import DataPoint
+from cais.db import DataPoint, DuplicateGroup
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,9 @@ def compute_phash(file_path: Path) -> str | None:
         return None
 
 
-def fast_scandir(root: Path) -> Iterator[os.DirEntry]:
+def fast_scandir(root: str) -> Iterator[os.DirEntry]:
     """Yields DirEntry objects, using an iterative stack to avoid recursion limits."""
-    directories = [root.resolve()]
+    directories = [root]
     while directories:
         current_dir = directories.pop()
         try:
@@ -63,83 +63,78 @@ def fast_scandir(root: Path) -> Iterator[os.DirEntry]:
 
 @dataclass
 class ScanResult:
-    entry_path: str
-    hash_in_db: bool
-    phash_in_db: Optional[bool]
-    entry: DataPoint
+    rel_path: str = None
+    in_db: bool = None
+    hash_in_db: bool = None
+    phash_in_db: Optional[bool] = None
+    entry: DataPoint = None
 
 
-def scan(root_dir: Path | str, known_state: Dict[str, DataPoint], do_perceptual: bool = False) -> List[ScanResult]:
-    """Walks the disk, compares against known state, and hashes new/modified files."""
-    root = Path(root_dir).resolve()
+@dataclass
+class AnalysisReport:
+    on_disk: List[Tuple[str, str, str]] = field(default_factory=list)
+    to_upsert: List[Tuple[str, str, int, float]] = field(default_factory=list)  # path, hash, size, mtime
+    to_upsert_phash: List[Tuple[str, str]] = field(default_factory=list)  # hash, phash
+    missing_on_disk: List[str] = field(default_factory=list)  # paths
+    duplicates: Dict[str, DuplicateGroup] = field(default_factory=dict)
 
-    known_hashes = {info.hash for info in known_state.values()}
-    hash_phash_map = {info.hash: info.phash for info in known_state.values()}
 
-    results: List[ScanResult] = []
+class ScanAnalyzer:
+    def __init__(self, root_dir: Path, scan_dir: Path, known_state: Dict[str, DataPoint]):
+        self.root_dir = root_dir
+        self.scan_dir = scan_dir
+        self.known_state = known_state
+        self.is_external = root_dir != scan_dir
 
-    # PHASE 1: Fast Discovery (based on file names)
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,  # Disappears when done
-    ) as progress:
-        scan_task = progress.add_task("[cyan]Scanning directory structure...", total=None)
+    def scan(self, do_perceptual: bool = False) -> List[ScanResult]:
+        """Walks the disk, compares against known state, and hashes new/modified files."""
 
-        for entry in fast_scandir(root):
-            entry_path = Path(entry.path)
-            rel_path = entry_path.relative_to(root).as_posix()
-            try:
-                stat = entry.stat(follow_symlinks=False)
-                mtime, size = stat.st_mtime, stat.st_size
-            except OSError as e:
-                logger.warning(f"[!] Warning: Could not read {entry_path} - {e}")
-                continue
+        root = os.path.relpath(self.scan_dir, self.root_dir)
+        known_state = self.known_state
 
-            # O(1) Check against the Database state
-            known_file = known_state.get(rel_path)
-            if known_file and known_file.mtime == mtime and known_file.size == size:
-                has_phash = known_file.phash is not None
-                result = ScanResult(entry_path, True, has_phash, known_file)
-            else:
-                new_point = DataPoint(None, None, size, mtime)
-                result = ScanResult(entry_path, False, None, new_point)
+        known_hashes = {info.hash for info in known_state.values()}
+        known_phashes = {info.phash for info in known_state.values()}
+        hash_phash_map = {info.hash: info.phash for info in known_state.values()}
 
-            results.append(result)
-            progress.update(scan_task, description=f"[cyan]Scanning directory... found {len(results)} files")
+        results: List[ScanResult] = []
 
-    # PHASE 2: Hashing
-    needs_hashing_count = len(list(filter(lambda r: not r.hash_in_db, results)))
-    if needs_hashing_count:
+        # PHASE 1: Fast Discovery (based on file names)
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TimeRemainingColumn(),
+            transient=True,  # Disappears when done
         ) as progress:
-            hash_task = progress.add_task("[green]Hashing new/modified files...", total=needs_hashing_count)
+            scan_task = progress.add_task("[cyan]Scanning directory structure...", total=None)
 
-            for i, r in enumerate(results):
-                if not r.hash_in_db:
-                    try:
-                        file_hash = compute_blake3(r.entry_path)
-                        r.entry.hash = file_hash
-                        if r.entry.hash in known_hashes:
-                            r.hash_in_db = True
+            for entry in fast_scandir(root):
+                result = ScanResult()
+                rel_path = Path(entry.path).as_posix()
+                result.rel_path = rel_path
+                try:
+                    stat = entry.stat(follow_symlinks=False)
+                    mtime, size = stat.st_mtime, stat.st_size
+                except OSError as e:
+                    logger.warning(f"[!] Warning: Could not read {result.rel_path} - {e}")
+                    continue
 
-                        _phash = hash_phash_map.get(file_hash)
-                        if _phash is not None:
-                            r.entry.phash = _phash
-                            r.phash_in_db = True
-                    except OSError as e:
-                        logger.warning(f"[!] Warning: Could not read/hash {r.entry_path} - {e}")
-                    progress.advance(hash_task)
+                # O(1) Check against the Database state
+                known_file = known_state.get(rel_path)
+                if known_file and known_file.mtime == mtime and known_file.size == size:
+                    result.in_db = True
+                    result.hash_in_db = True
+                    result.phash_in_db = known_file.phash is not None
+                    result.entry = known_file
 
-    # PHASE 3: Perceptual Hashing
-    if do_perceptual:
-        needs_phashing_count = len(list(filter(lambda r: not r.phash_in_db, results)))
-        if needs_phashing_count:
+                else:
+                    result.in_db = False
+                    result.entry = DataPoint(None, None, size, mtime)
+
+                results.append(result)
+                progress.update(scan_task, description=f"[cyan]Scanning directory... found {len(results)} files")
+
+        # PHASE 2: Hashing
+        needs_hashing_count = len(list(filter(lambda r: not r.hash_in_db, results)))
+        if needs_hashing_count:
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -147,99 +142,116 @@ def scan(root_dir: Path | str, known_state: Dict[str, DataPoint], do_perceptual:
                 TaskProgressColumn(),
                 TimeRemainingColumn(),
             ) as progress:
-                phash_task = progress.add_task("[magenta]Calculating perceptual hashes...", total=needs_phashing_count)
+                hash_task = progress.add_task("[green]Hashing new/modified files...", total=needs_hashing_count)
 
-                for i, r in enumerate(results):
-                    if not r.phash_in_db:
+                for r in results:
+                    if r.hash_in_db is None or not r.hash_in_db:
                         try:
-                            file_phash = compute_phash(r.entry_path)
-                            r.entry.phash = file_phash
+                            file_hash = compute_blake3(r.rel_path)
+                            r.entry.hash = file_hash
+                            if r.entry.hash in known_hashes:
+                                r.hash_in_db = True
+
+                            _phash = hash_phash_map.get(file_hash)
+                            if _phash is not None:
+                                r.entry.phash = _phash
+                                r.phash_in_db = True
                         except OSError as e:
-                            logger.warning(f"[!] Warning: Could not read/hash {r.entry_path} - {e}")
-                        progress.advance(phash_task)
+                            logger.warning(f"[!] Warning: Could not read/hash {r.rel_path} - {e}")
+                        progress.advance(hash_task)
 
-    return results
+        # PHASE 3: Perceptual Hashing
+        if do_perceptual:
+            needs_phashing_count = len(list(filter(lambda r: not r.phash_in_db, results)))
+            if needs_phashing_count:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    TimeRemainingColumn(),
+                ) as progress:
+                    phash_task = progress.add_task(
+                        "[magenta]Calculating perceptual hashes...", total=needs_phashing_count
+                    )
 
+                    for r in results:
+                        if not r.phash_in_db:
+                            try:
+                                file_phash = compute_phash(r.rel_path)
+                                r.entry.phash = file_phash
+                                if r.entry.phash in known_phashes:
+                                    r.phash_in_db = True
 
-@dataclass
-class AnalysisReport:
-    missing_on_disk: List[str] = field(default_factory=list)
-    to_upsert: List[Tuple[str, str, int, float]] = field(default_factory=list)
-    to_upsert_phash: List[Tuple[str, str]] = field(default_factory=list)
+                            except OSError as e:
+                                logger.warning(f"[!] Warning: Could not read/hash {r.rel_path} - {e}")
+                            progress.advance(phash_task)
 
-    exact_dupes: Dict[str, List[str]] = field(default_factory=dict)
-    perceptual_dupes: Dict[str, List[str]] = field(default_factory=dict)
+        return results
 
-    unchanged_count: int = 0
-    new_modified_count: int = 0
-
-
-class ScanAnalyzer:
-    def __init__(self, root_dir: Path, scan_dir: Path, known_state: Dict[str, "DataPoint"]):
-        self.root_dir = root_dir
-        self.scan_dir = scan_dir
-        self.known_state = known_state
-
-        # Determine if we are scanning internally or an external drive
-        try:
-            self.scan_rel = self.scan_dir.relative_to(self.root_dir).as_posix()
-            self.is_external = False
-            if self.scan_rel == ".":
-                self.scan_rel = ""
-        except ValueError:
-            self.scan_rel = ""
-            self.is_external = True
-
-    def analyze(self, results: List[ScanResult], db_dupes: dict, db_pdupes: dict) -> AnalysisReport:
+    def analyze(
+        self,
+        results: List[ScanResult],
+    ) -> AnalysisReport:
         report = AnalysisReport()
-        run_hashes, run_phashes = {}, {}
-        scanned_paths = set()
+
+        hash_on_disk = []
+        phash_only_on_disk = []
 
         for r in results:
-            # 1. Path Resolution
-            p = r.entry_path.relative_to(self.root_dir).as_posix() if not self.is_external else str(r.entry_path)
-            scanned_paths.add(p)
+            entry = r.entry
+            if r.in_db:
+                # print("DEBUG", r.rel_path)
+                report.on_disk.append((r.rel_path, entry.hash, entry.phash))
 
-            # 2. Grouping
-            if r.entry.hash:
-                run_hashes.setdefault(r.entry.hash, []).append(p)
-            if r.entry.phash:
-                run_phashes.setdefault(r.entry.phash, []).append(p)
-
-            # 3. Payload Prep (Skip external paths for DB upserts)
-            kf = self.known_state.get(p)
-            is_unchanged = kf and kf.mtime == r.entry.mtime and kf.size == r.entry.size
-
-            if is_unchanged:
-                report.unchanged_count += 1
             else:
-                report.new_modified_count += 1
-                if not self.is_external and r.entry.hash:
-                    report.to_upsert.append((p, r.entry.hash, r.entry.size, r.entry.mtime))
+                report.to_upsert.append((r.rel_path, entry.hash, entry.size, entry.mtime))
 
-            if not self.is_external and r.entry.phash and (not is_unchanged or (kf and kf.phash != r.entry.phash)):
-                report.to_upsert_phash.append((r.entry.hash, r.entry.phash))
+                if r.hash_in_db:
+                    hash_on_disk.append((entry.hash, r.rel_path))
 
-        # 4. Calculate Missing Files (Only if internal)
+                elif r.phash_in_db:
+                    phash_only_on_disk.append((entry.phash, r.rel_path))
+
+            if not r.phash_in_db and entry.phash is not None:
+                report.to_upsert_phash.append((entry.hash, entry.phash))
+
+        # calculate missing files (only if internal)
         if not self.is_external:
-            expected = {p for p in self.known_state if p == self.scan_rel or p.startswith(self.scan_rel + "/")}
-            report.missing_on_disk = list(expected - scanned_paths)
+            expected = set(self.known_state.keys())
+            found = set(r.rel_path for r in results)
+            report.missing_on_disk = list(expected - found)
 
-        # 5. Merge Duplicates
-        report.exact_dupes = self._merge_dupes(run_hashes, db_dupes)
-        report.perceptual_dupes = self._merge_dupes(run_phashes, db_pdupes)
+        # calculate dupes
+        hash_to_path = {}
+        phash_to_path = {}
+        if self.is_external:
+            for path, datapoint in self.known_state.items():
+                hash_to_path[datapoint.hash] = path
+                if datapoint.phash is not None:
+                    phash_to_path[datapoint.phash] = path
+
+        else:
+            for path, h, ph in report.on_disk:
+                hash_to_path[h] = path
+                if ph is not None:
+                    phash_to_path[ph] = path
+
+        exact_dupes = self._group_duplicates_with_representative(hash_on_disk, hash_to_path, "hash")
+        perceptual_dupes = self._group_duplicates_with_representative(phash_only_on_disk, phash_to_path, "phash")
+        report.duplicates.update(exact_dupes)
+        report.duplicates.update(perceptual_dupes)
 
         return report
 
-    def _merge_dupes(self, run_dict: dict, db_dict: dict) -> dict:
-        """Helper to combine run duplicates with historical DB duplicates."""
-        merged = {}
-        for k, paths in run_dict.items():
-            combined = list(dict.fromkeys(db_dict.get(k, []) + paths))
-            if len(combined) > 1:
-                merged[k] = combined
+    def _group_duplicates_with_representative(self, duplicates, look_up, match_type: str) -> dict:
 
-        for k, db_paths in db_dict.items():
-            if k not in merged and len(db_paths) > 1:
-                merged[k] = db_paths
-        return merged
+        duplicate_map = {}
+
+        # Exact hash matches
+        for h, path in duplicates:
+            original = look_up[h]  # exactly one match guaranteed
+            entry = duplicate_map.setdefault(h, DuplicateGroup(original, [], match_type))
+            entry.duplicates.append(path)
+
+        return duplicate_map

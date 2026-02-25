@@ -1,8 +1,9 @@
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 from rich.console import Console
 from rich.table import Table
@@ -10,7 +11,7 @@ from rich.tree import Tree
 
 from cais.db import IndexDB
 from cais.logger import setup_logging
-from cais.reconciler import ScanAnalyzer, scan
+from cais.reconciler import DuplicateGroup, ScanAnalyzer
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -33,41 +34,73 @@ def get_db_or_exit(db_file: Path) -> IndexDB:
     return IndexDB(db_file)
 
 
-def report_duplicates(exact_dupes: Dict[str, List[str]], perceptual_dupes: Dict[str, List[str]]) -> None:
-    """Handles the differentiated duplicate presentation logic using rich Trees."""
+def report_duplicates(duplicates: Dict[str, DuplicateGroup]) -> None:
+    """Report duplicate groups (exact + perceptual) in a unified format."""
 
-    def print_dupe_tree(dupes: Dict[str, List[str]], dupe_type: str, color: str):
-        if not dupes:
-            console.print(f"\n[bold green]✓ No {dupe_type} found![/bold green]")
-            return
+    output_dir = Path(".cais")
+    output_dir.mkdir(exist_ok=True)
 
-        total_dupe_files = sum(len(paths) for paths in dupes.values())
-        unique_assets = len(dupes)
-        wasted_space_files = total_dupe_files - unique_assets
+    # --- Stats ---
+    exact = {k: v for k, v in duplicates.items() if v.match_type == "hash"}
+    perceptual = {k: v for k, v in duplicates.items() if v.match_type == "phash"}
 
-        console.print(
-            f"\n[bold yellow]! Found {wasted_space_files} redundant files across {unique_assets} unique {dupe_type}.[/bold yellow]"
-        )
+    exact_count = sum(len(v.duplicates) for v in exact.values())
+    perceptual_count = sum(len(v.duplicates) for v in perceptual.values())
+    total_redundant = exact_count + perceptual_count
 
-        if wasted_space_files <= 10:
-            for hash_val, paths in dupes.items():
-                tree = Tree(f"📄 [bold {color}]{hash_val[:8]}...[/bold {color}]")
-                for p in paths:
-                    tree.add(f"[dim]{p}[/dim]")
-                console.print(tree)
-        else:
-            log_path = Path(f"cais_{dupe_type.replace(' ', '_')}.log")
-            with open(log_path, "w", encoding="utf-8") as f:
-                for hash_val, paths in dupes.items():
-                    f.write(f"Hash: {hash_val}\n")
-                    for p in paths:
-                        f.write(f"  {p}\n")
-                    f.write("\n")
-            console.print(f"[dim]* Too many {dupe_type} to display. Details written to {log_path.resolve()}[/dim]")
+    if not duplicates:
+        console.print("\n[bold green]✓ No duplicates found![/bold green]")
+        return
 
-    # Print differentiated reports
-    print_dupe_tree(exact_dupes, "exact binary duplicates", "cyan")
-    print_dupe_tree(perceptual_dupes, "visual duplicates", "magenta")
+    console.print(
+        f"\n[bold yellow]! Found {total_redundant} redundant files "
+        f"({exact_count} exact, {perceptual_count} perceptual).[/bold yellow]"
+    )
+
+    # --- Write unified log ---
+    log_path = output_dir / "cais_duplicates.log"
+    json_path = output_dir / "cais_duplicates.json"
+
+    with open(log_path, "w", encoding="utf-8") as f:
+        for key, group in duplicates.items():
+            f.write(f"{group.match_type.upper()} {key}\n")
+            f.write(f"  Representative: {group.original}\n")
+            for p in group.duplicates:
+                f.write(f"  Duplicate: {p}\n")
+            f.write("\n")
+
+    # JSON (structured)
+    json_data = {
+        key: {
+            "representative": group.original,
+            "duplicates": group.duplicates,
+            "match_type": group.match_type,
+        }
+        for key, group in duplicates.items()
+    }
+
+    with open(json_path, "w", encoding="utf-8") as jf:
+        json.dump(json_data, jf, indent=4)
+
+    # --- Rich Tree (if small enough) ---
+    if total_redundant < 10:
+        tree = Tree("📂 [bold]Duplicates[/bold]")
+
+        for key, group in duplicates.items():
+            color = "cyan" if group.match_type == "hash" else "magenta"
+            label = f"[bold {color}]{key[:8]}...[/bold {color}]"
+            branch = tree.add(label)
+
+            if group.original is not None:
+                branch.add(f"[green]✔ {group.original}[/green]")
+            for dup in group.duplicates:
+                branch.add(f"[dim]{dup}[/dim]")
+
+        console.print(tree)
+    else:
+        console.print("[dim]* Too many duplicates to display.[/dim]")
+
+    console.print(f"[dim]* Details written to:\n  - {log_path.resolve()}\n  - {json_path.resolve()}[/dim]")
 
 
 def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True, do_perceptual: bool = False) -> None:
@@ -77,22 +110,21 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
         # 1. Gather Context
         with console.status("[bold blue]Loading known state from database..."):
             known_state = db.get_known_state()
-            db_exact = db.get_duplicates()
-            db_perceptual = db.get_perceptual_duplicates() if do_perceptual else {}
 
         # 2. Execute Scan
-        results = scan(scan_dir, known_state, do_perceptual)
+        analyzer = ScanAnalyzer(root_dir, scan_dir, known_state)
+        results = analyzer.scan(do_perceptual)
 
         # 3. Analyze Results
-        analyzer = ScanAnalyzer(root_dir, scan_dir, known_state)
-        report = analyzer.analyze(results, db_exact, db_perceptual)
+
+        report = analyzer.analyze(results)
 
         # 4. Print Summary UI
         summary_table = Table(show_header=False, box=None)
         summary_table.add_column("Metric", style="bold")
         summary_table.add_column("Value", style="cyan")
-        summary_table.add_row("[-] Unchanged files:", str(report.unchanged_count))
-        summary_table.add_row("[-] New/Modified files to hash:", str(report.new_modified_count))
+        summary_table.add_row("[-] Unchanged files:", str(len(report.on_disk)))
+        summary_table.add_row("[-] New/Modified files to hash:", str(len(report.to_upsert)))
         summary_table.add_row("[-] Missing files:", str(len(report.missing_on_disk)))
         console.print(summary_table)
 
@@ -110,7 +142,7 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
             console.print("[bold green]✓ Update complete.[/bold green]")
 
         # 6. Print Duplicates UI
-        report_duplicates(report.exact_dupes, report.perceptual_dupes)
+        report_duplicates(report.duplicates)
 
     finally:
         db.close()
@@ -163,6 +195,10 @@ def handle_status(args, db_file: Path, root_path: Path):
         table.add_row("Total Size", format_size(stats["size"]))
 
         console.print(table)
+
+        duplicates = db.get_all_duplicates()
+        report_duplicates(duplicates)
+
     finally:
         db.close()
 
