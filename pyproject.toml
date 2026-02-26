@@ -29,8 +29,11 @@ dev = [
     "types-tqdm",
     "pytest",
 ]
+delview = ["PySide6", "opencv-python", "Send2Trash"]
+
 [project.scripts]
 cais = "cais.cli:main"
+delview = "delview.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
