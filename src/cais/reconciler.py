@@ -238,20 +238,17 @@ class ScanAnalyzer:
                     phash_to_path[ph] = path
 
         exact_dupes = self._group_duplicates_with_representative(hash_on_disk, hash_to_path, "hash")
-        perceptual_dupes = self._group_duplicates_with_representative(phash_only_on_disk, phash_to_path, "phash")
-        report.duplicates.update(exact_dupes)
-        report.duplicates.update(perceptual_dupes)
+        all_dupes = self._group_duplicates_with_representative(phash_only_on_disk, phash_to_path, "phash", exact_dupes)
+        report.duplicates = all_dupes
 
         return report
 
-    def _group_duplicates_with_representative(self, duplicates, look_up, match_type: str) -> dict:
-
-        duplicate_map = {}
+    def _group_duplicates_with_representative(self, duplicates, look_up, match_type: str, duplicate_map={}) -> dict:
 
         # Exact hash matches
         for h, path in duplicates:
             original = look_up[h]  # exactly one match guaranteed
-            entry = duplicate_map.setdefault(h, DuplicateGroup(original, [], match_type))
-            entry.duplicates.append(path)
+            entry = duplicate_map.setdefault(original, DuplicateGroup(original, []))
+            entry.duplicates.append((path, match_type))
 
         return duplicate_map

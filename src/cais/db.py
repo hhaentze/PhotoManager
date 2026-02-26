@@ -16,8 +16,7 @@ class DataPoint:
 @dataclass
 class DuplicateGroup:
     original: Optional[str]
-    duplicates: list[str]
-    match_type: str  # "hash" or "phash"
+    duplicates: list[Tuple[str, str]]  # path & match_type[hash/phash]
 
 
 class IndexDB:
@@ -133,58 +132,38 @@ class IndexDB:
     def get_all_duplicates(self) -> dict[str, DuplicateGroup]:
         """Return {hash_or_phash: DuplicateGroup} for exact + perceptual duplicates."""
 
-        duplicates: dict[str, DuplicateGroup] = {}
-
-        # --- Exact duplicates (same hash, multiple paths) ---
-        cursor = self.conn.execute("""
-            SELECT l.hash, l.path
-            FROM locations l
-            WHERE l.hash IN (
-                SELECT hash
-                FROM locations
-                GROUP BY hash
-                HAVING COUNT(*) > 1
+        query = """
+            WITH GroupedPaths AS (
+                SELECT 
+                    l.path,
+                    COALESCE(a.phash, l.hash) AS group_id,
+                    COUNT(l.path) OVER (PARTITION BY COALESCE(a.phash, l.hash)) AS group_size,
+                    COUNT(l.path) OVER (PARTITION BY l.hash) AS hash_size
+                FROM locations l
+                JOIN assets a ON l.hash = a.hash
             )
-            ORDER BY l.hash;
-        """)
+            SELECT 
+                group_id, 
+                path, 
+                CASE 
+                    WHEN hash_size > 1 THEN 'hash'
+                    ELSE 'phash'
+                END AS match_type
+            FROM GroupedPaths
+            WHERE group_size > 1
+            ORDER BY group_id, match_type;
+        """
 
-        exact_map: dict[str, list[str]] = defaultdict(list)
-        for h, path in cursor:
-            exact_map[h].append(path)
+        cursor = self.conn.execute(query)
+        grouped_data: dict[str, list[Tuple[str, str]]] = defaultdict(list)
 
-        for h, paths in exact_map.items():
-            duplicates[h] = DuplicateGroup(
-                original=None,
-                duplicates=paths,
-                match_type="hash",
-            )
+        for group_id, path, match_type in cursor:
+            grouped_data[group_id].append((path, match_type))
 
-        # --- Perceptual duplicates (same phash, different hashes) ---
-        cursor = self.conn.execute("""
-            SELECT a.phash, l.path
-            FROM assets a
-            JOIN locations l ON l.hash = a.hash
-            WHERE a.phash IS NOT NULL
-            AND a.phash IN (
-                SELECT phash
-                FROM assets
-                WHERE phash IS NOT NULL
-                GROUP BY phash
-                HAVING COUNT(DISTINCT hash) > 1
-            )
-            ORDER BY a.phash;
-        """)
-
-        phash_map: dict[str, list[str]] = defaultdict(list)
-        for ph, path in cursor:
-            phash_map[ph].append(path)
-
-        for ph, paths in phash_map.items():
-            duplicates[ph] = DuplicateGroup(
-                original=None,
-                duplicates=paths,
-                match_type="phash",
-            )
+        # Convert the defaultdict to the final dict of DuplicateGroup dataclasses
+        duplicates: dict[str, DuplicateGroup] = {
+            group_id: DuplicateGroup(original=None, duplicates=paths) for group_id, paths in grouped_data.items()
+        }
 
         return duplicates
 

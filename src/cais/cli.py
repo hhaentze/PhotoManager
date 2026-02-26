@@ -34,23 +34,17 @@ def get_db_or_exit(db_file: Path) -> IndexDB:
     return IndexDB(db_file)
 
 
-def report_duplicates(duplicates: Dict[str, DuplicateGroup]) -> None:
+def report_duplicates(duplicates: Dict[str, DuplicateGroup], output_dir: Path) -> None:
     """Report duplicate groups (exact + perceptual) in a unified format."""
-
-    output_dir = Path(".cais")
-    output_dir.mkdir(exist_ok=True)
-
-    # --- Stats ---
-    exact = {k: v for k, v in duplicates.items() if v.match_type == "hash"}
-    perceptual = {k: v for k, v in duplicates.items() if v.match_type == "phash"}
-
-    exact_count = sum(len(v.duplicates) for v in exact.values())
-    perceptual_count = sum(len(v.duplicates) for v in perceptual.values())
-    total_redundant = exact_count + perceptual_count
 
     if not duplicates:
         console.print("\n[bold green]✓ No duplicates found![/bold green]")
         return
+
+    # --- Stats ---
+    exact_count = sum(1 for group in duplicates.values() for _, t in group.duplicates if t == "hash")
+    perceptual_count = sum(1 for group in duplicates.values() for _, t in group.duplicates if t == "phash")
+    total_redundant = exact_count + perceptual_count
 
     console.print(
         f"\n[bold yellow]! Found {total_redundant} redundant files "
@@ -62,39 +56,42 @@ def report_duplicates(duplicates: Dict[str, DuplicateGroup]) -> None:
     json_path = output_dir / "cais_duplicates.json"
 
     with open(log_path, "w", encoding="utf-8") as f:
-        for key, group in duplicates.items():
-            f.write(f"{group.match_type.upper()} {key}\n")
-            f.write(f"  Representative: {group.original}\n")
-            for p in group.duplicates:
-                f.write(f"  Duplicate: {p}\n")
+        for i, group in enumerate(duplicates.values(), start=1):
+            f.write(f"GROUP {i}\n")
+            if group.original is not None:
+                f.write(f"  Representative: {group.original}\n")
+            for path, match_type in group.duplicates:
+                f.write(f"  Duplicate ({match_type}): {path}\n")
             f.write("\n")
 
     # JSON (structured)
     json_data = {
-        key: {
+        group.original or f"group_{i}": {
             "representative": group.original,
             "duplicates": group.duplicates,
-            "match_type": group.match_type,
         }
-        for key, group in duplicates.items()
+        for i, group in enumerate(duplicates.values())
     }
 
     with open(json_path, "w", encoding="utf-8") as jf:
         json.dump(json_data, jf, indent=4)
 
     # --- Rich Tree (if small enough) ---
-    if total_redundant < 10:
-        tree = Tree("📂 [bold]Duplicates[/bold]")
+    if total_redundant < 30:
+        tree = Tree("[bold]Duplicates[/bold]")
 
-        for key, group in duplicates.items():
-            color = "cyan" if group.match_type == "hash" else "magenta"
-            label = f"[bold {color}]{key[:8]}...[/bold {color}]"
+        for i, group in enumerate(duplicates.values()):
+            # Use representative name as branch label
+            label = (
+                f"[bold green]{Path(group.original).name}[/bold green]"  #
+                if group.original
+                else f"[bold]Group {i}[/bold]"
+            )
+
             branch = tree.add(label)
-
-            if group.original is not None:
-                branch.add(f"[green]✔ {group.original}[/green]")
-            for dup in group.duplicates:
-                branch.add(f"[dim]{dup}[/dim]")
+            for path, match_type in group.duplicates:
+                color = "cyan" if match_type == "hash" else "magenta"
+                branch.add(f"[{color}]{path} ({match_type})[/{color}]")
 
         console.print(tree)
     else:
@@ -114,9 +111,6 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
         # 2. Execute Scan
         analyzer = ScanAnalyzer(root_dir, scan_dir, known_state)
         results = analyzer.scan(do_perceptual)
-
-        # 3. Analyze Results
-
         report = analyzer.analyze(results)
 
         # 4. Print Summary UI
@@ -142,7 +136,7 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
             console.print("[bold green]✓ Update complete.[/bold green]")
 
         # 6. Print Duplicates UI
-        report_duplicates(report.duplicates)
+        report_duplicates(report.duplicates, db_path.parent)
 
     finally:
         db.close()
@@ -197,7 +191,7 @@ def handle_status(args, db_file: Path, root_path: Path):
         console.print(table)
 
         duplicates = db.get_all_duplicates()
-        report_duplicates(duplicates)
+        report_duplicates(duplicates, db_file.parent)
 
     finally:
         db.close()
@@ -227,7 +221,9 @@ def main():
 
     # Paths
     root_path = Path.cwd()
-    db_file = root_path / ".cais.db"
+    db_dir = Path(".cais")
+    db_dir.mkdir(exist_ok=True)
+    db_file = root_path / db_dir / ".cais.db"
 
     # Execute the bound function dynamically
     args.func(args, db_file, root_path)
