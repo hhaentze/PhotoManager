@@ -34,6 +34,9 @@ delview = ["PySide6", "opencv-python", "Send2Trash"]
 [project.scripts]
 cais = "cais.cli:main"
 delview = "delview.app:main"
+mover = "mover.cli:main"
+imagetags = "imagetags.main:main"
+timeInject = "timeInject.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

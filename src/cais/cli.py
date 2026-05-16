@@ -11,7 +11,7 @@ from rich.tree import Tree
 
 from cais.db import IndexDB
 from cais.logger import setup_logging
-from cais.reconciler import DuplicateGroup, ScanAnalyzer
+from cais.reconciler import AnalysisReport, DuplicateGroup, ScanAnalyzer, compare_dbs
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -37,19 +37,18 @@ def get_db_or_exit(db_file: Path) -> IndexDB:
 def report_duplicates(duplicates: Dict[str, DuplicateGroup], output_dir: Path) -> None:
     """Report duplicate groups (exact + perceptual) in a unified format."""
 
-    if not duplicates:
-        console.print("\n[bold green]✓ No duplicates found![/bold green]")
-        return
-
     # --- Stats ---
     exact_count = sum(1 for group in duplicates.values() for _, t in group.duplicates if t == "hash")
     perceptual_count = sum(1 for group in duplicates.values() for _, t in group.duplicates if t == "phash")
     total_redundant = exact_count + perceptual_count
 
-    console.print(
-        f"\n[bold yellow]! Found {total_redundant} redundant files "
-        f"({exact_count} exact, {perceptual_count} perceptual).[/bold yellow]"
-    )
+    if duplicates:
+        console.print(
+            f"\n[bold yellow]! Found {total_redundant} redundant files "
+            f"({exact_count} exact, {perceptual_count} perceptual).[/bold yellow]"
+        )
+    else:
+        console.print("\n[bold green]✓ No duplicates found![/bold green]")
 
     # --- Write unified log ---
     log_path = output_dir / "cais_duplicates.log"
@@ -97,7 +96,21 @@ def report_duplicates(duplicates: Dict[str, DuplicateGroup], output_dir: Path) -
     else:
         console.print("[dim]* Too many duplicates to display.[/dim]")
 
-    console.print(f"[dim]* Details written to:\n  - {log_path.resolve()}\n  - {json_path.resolve()}[/dim]")
+
+def print_and_save_report(report: AnalysisReport, output_dir: Path) -> None:
+
+    with open(output_dir / "cais_missing_on_disk.json", "w") as f:
+        json.dump(report.missing_on_disk, f, indent=4)
+
+    with open(output_dir / "cais_new_files.json", "w") as f:
+        json.dump(report.new_files, f, indent=4)
+
+    with open(output_dir / "cais_new_and_modified_files.json", "w") as f:
+        new_and_modified_files = [f for f, _, _, _ in report.to_upsert]
+        json.dump(new_and_modified_files, f, indent=4)
+
+    report_duplicates(report.duplicates, output_dir)
+    console.print(f"[dim]* Details written to:\n  - {output_dir.resolve()}[/dim]")
 
 
 def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True, do_perceptual: bool = False) -> None:
@@ -135,11 +148,50 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
                 db.remove_paths(report.missing_on_disk)
             console.print("[bold green]✓ Update complete.[/bold green]")
 
-        # 6. Print Duplicates UI
-        report_duplicates(report.duplicates, db_path.parent)
+        # 6. Print UI
+        print_and_save_report(report, db_path.parent)
 
     finally:
         db.close()
+
+
+def handle_compare(args, db_path: Path, root_path: Path):
+    db1 = get_db_or_exit(db_path)
+    db2_path = (Path(args.db2_path) / ".cais/.cais.db").resolve()
+
+    if not db2_path.exists():
+        console.print(f"[bold red]Error:[/bold red] Target database not found at {db2_path}")
+        sys.exit(1)
+
+    # Load DB2 in read-only mode implicitly by not calling init
+    db2 = IndexDB(db2_path)
+    try:
+        # Fetch states once
+        state1 = db1.get_known_state()
+        state2 = db2.get_known_state()
+
+        # Generate Report
+        report = compare_dbs(state1, state2)
+
+    finally:
+        db1.close()
+        db2.close()
+
+    # Print Summary UI
+    summary_table = Table(show_header=False, box=None)
+    summary_table.add_column("Metric", style="bold")
+    summary_table.add_column("Value", style="cyan")
+
+    summary_table.add_row("[-] Files in Current DB:", str(len(state1)))
+    summary_table.add_row("[-] Files in Target DB:", str(len(state2)))
+    summary_table.add_row("[-] Unique files in Target DB:", str(len(report.new_files)))
+
+    total_dupes = sum(len(g.duplicates) for g in report.duplicates.values())
+    summary_table.add_row("[-] Redundant files in Target DB:", str(total_dupes))
+
+    console.print(summary_table)
+
+    print_and_save_report(report, db_path.parent)
 
 
 # --- Command Handlers ---
@@ -216,6 +268,10 @@ def main():
 
     parser_status = subparsers.add_parser("status", help="Print database statistics")
     parser_status.set_defaults(func=handle_status)
+
+    parser_compare = subparsers.add_parser("compare", help="Compare this DB with another DB without scanning")
+    parser_compare.add_argument("db2_path", help="Path to the external direcotry managed by cais")
+    parser_compare.set_defaults(func=handle_compare)
 
     args = parser.parse_args()
 

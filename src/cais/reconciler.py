@@ -77,6 +77,7 @@ class AnalysisReport:
     to_upsert_phash: List[Tuple[str, str]] = field(default_factory=list)  # hash, phash
     missing_on_disk: List[str] = field(default_factory=list)  # paths
     duplicates: Dict[str, DuplicateGroup] = field(default_factory=dict)
+    new_files: List[str] = field(default_factory=list)  # path
 
 
 class ScanAnalyzer:
@@ -84,17 +85,11 @@ class ScanAnalyzer:
         self.root_dir = root_dir
         self.scan_dir = scan_dir
         self.known_state = known_state
+        self.updated_state = {}
         self.is_external = root_dir != scan_dir
 
     def scan(self, do_perceptual: bool = False) -> List[ScanResult]:
         """Walks the disk, compares against known state, and hashes new/modified files."""
-
-        root = os.path.relpath(self.scan_dir, self.root_dir)
-        known_state = self.known_state
-
-        known_hashes = {info.hash for info in known_state.values()}
-        known_phashes = {info.phash for info in known_state.values()}
-        hash_phash_map = {info.hash: info.phash for info in known_state.values()}
 
         results: List[ScanResult] = []
 
@@ -106,10 +101,9 @@ class ScanAnalyzer:
         ) as progress:
             scan_task = progress.add_task("[cyan]Scanning directory structure...", total=None)
 
-            for entry in fast_scandir(root):
-                result = ScanResult()
-                rel_path = Path(entry.path).as_posix()
-                result.rel_path = rel_path
+            for entry in fast_scandir(self.scan_dir):
+                rel_path = Path(os.path.relpath(entry.path, self.scan_dir)).as_posix()
+                result = ScanResult(rel_path=rel_path)
                 try:
                     stat = entry.stat(follow_symlinks=False)
                     mtime, size = stat.st_mtime, stat.st_size
@@ -118,12 +112,13 @@ class ScanAnalyzer:
                     continue
 
                 # O(1) Check against the Database state
-                known_file = known_state.get(rel_path)
+                known_file = self.known_state.get(rel_path)
                 if known_file and known_file.mtime == mtime and known_file.size == size:
                     result.in_db = True
                     result.hash_in_db = True
                     result.phash_in_db = known_file.phash is not None
                     result.entry = known_file
+                    self.updated_state[rel_path] = known_file
 
                 else:
                     result.in_db = False
@@ -131,6 +126,10 @@ class ScanAnalyzer:
 
                 results.append(result)
                 progress.update(scan_task, description=f"[cyan]Scanning directory... found {len(results)} files")
+
+        known_hashes = {info.hash for info in self.updated_state.values()}
+        known_phashes = {info.phash for info in self.updated_state.values()}
+        hash_phash_map = {info.hash: info.phash for info in self.updated_state.values()}
 
         # PHASE 2: Hashing
         needs_hashing_count = len(list(filter(lambda r: not r.hash_in_db, results)))
@@ -147,7 +146,7 @@ class ScanAnalyzer:
                 for r in results:
                     if r.hash_in_db is None or not r.hash_in_db:
                         try:
-                            file_hash = compute_blake3(r.rel_path)
+                            file_hash = compute_blake3(self.scan_dir / r.rel_path)
                             r.entry.hash = file_hash
                             if r.entry.hash in known_hashes:
                                 r.hash_in_db = True
@@ -178,7 +177,7 @@ class ScanAnalyzer:
                     for r in results:
                         if not r.phash_in_db:
                             try:
-                                file_phash = compute_phash(r.rel_path)
+                                file_phash = compute_phash(self.scan_dir / r.rel_path)
                                 r.entry.phash = file_phash
                                 if r.entry.phash in known_phashes:
                                     r.phash_in_db = True
@@ -198,10 +197,15 @@ class ScanAnalyzer:
         hash_on_disk = []
         phash_only_on_disk = []
 
+        # calculate missing files (only if internal)
+        if not self.is_external:
+            expected = set(self.known_state.keys())
+            found = set(self.updated_state.keys())
+            report.missing_on_disk = list(expected - found)
+
         for r in results:
             entry = r.entry
             if r.in_db:
-                # print("DEBUG", r.rel_path)
                 report.on_disk.append((r.rel_path, entry.hash, entry.phash))
 
             else:
@@ -216,17 +220,11 @@ class ScanAnalyzer:
             if not r.phash_in_db and entry.phash is not None:
                 report.to_upsert_phash.append((entry.hash, entry.phash))
 
-        # calculate missing files (only if internal)
-        if not self.is_external:
-            expected = set(self.known_state.keys())
-            found = set(r.rel_path for r in results)
-            report.missing_on_disk = list(expected - found)
-
         # calculate dupes
         hash_to_path = {}
         phash_to_path = {}
         if self.is_external:
-            for path, datapoint in self.known_state.items():
+            for path, datapoint in self.updated_state.items():
                 hash_to_path[datapoint.hash] = path
                 if datapoint.phash is not None:
                     phash_to_path[datapoint.phash] = path
@@ -241,14 +239,64 @@ class ScanAnalyzer:
         all_dupes = self._group_duplicates_with_representative(phash_only_on_disk, phash_to_path, "phash", exact_dupes)
         report.duplicates = all_dupes
 
+        # get completly new files
+        all_files = set(r.rel_path for r in results)
+        duplicated_files = set()
+        for entry in all_dupes.values():
+            paths = {d[0] for d in entry.duplicates}
+            duplicated_files.update(paths)
+
+        report.new_files = list(all_files - duplicated_files)
+
         return report
 
     def _group_duplicates_with_representative(self, duplicates, look_up, match_type: str, duplicate_map={}) -> dict:
 
         # Exact hash matches
         for h, path in duplicates:
+            print(h, path)
             original = look_up[h]  # exactly one match guaranteed
             entry = duplicate_map.setdefault(original, DuplicateGroup(original, []))
             entry.duplicates.append((path, match_type))
 
         return duplicate_map
+
+
+def compare_dbs(state1: Dict[str, DataPoint], state2: Dict[str, DataPoint]) -> AnalysisReport:
+    """Generates the comparison report efficiently using O(1) dictionary lookups."""
+    report = AnalysisReport(
+        missing_on_disk=list(set(state1) - set(state2)),
+        new_files=list(set(state2) - set(state1)),
+    )
+
+    # 1. Build reverse lookups for the base state to find duplicates quickly
+    hash_map = {dp.hash: path for path, dp in state1.items()}
+    phash_map = {dp.phash: path for path, dp in state1.items() if dp.phash}
+    upsert_phash = set()
+
+    # 2. Reconcile Target State (db2) against Base State (db1)
+    for path2, dp2 in state2.items():
+        dp1 = state1.get(path2)
+
+        # Categorize updates vs unchanged
+        if dp1 == dp2:
+            report.on_disk.append((path2, dp2.hash, dp2.phash))
+        else:
+            report.to_upsert.append((path2, dp2.hash, dp2.size, dp2.mtime))
+            if dp2.phash:
+                upsert_phash.add((dp2.hash, dp2.phash))
+
+        # Categorize duplicates
+        orig_path, match_type = None, None
+        if dp2.hash in hash_map:
+            orig_path, match_type = hash_map[dp2.hash], "hash"
+        elif dp2.phash in phash_map:
+            orig_path, match_type = phash_map[dp2.phash], "phash"
+
+        if orig_path:
+            if orig_path not in report.duplicates:
+                report.duplicates[orig_path] = DuplicateGroup(original=orig_path, duplicates=[])
+            report.duplicates[orig_path].duplicates.append((path2, match_type))
+
+    report.to_upsert_phash = list(upsert_phash)
+    return report

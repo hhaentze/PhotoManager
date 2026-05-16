@@ -9,12 +9,10 @@ import shutil as sh
 import sys
 from pathlib import Path
 
-import ai_content
-import name_methods
-import time_methods
 from PIL import Image
 from tqdm import tqdm
 
+from imagetags import ai_content, name_methods, time_methods
 from imagetags.logger import setup_logging
 
 
@@ -44,7 +42,7 @@ def main():
     parser = setup_argparse()
     args = parser.parse_args()
 
-    basepath = Path(r"G:\Projects\AutomaticImageTags\data")
+    basepath = Path(r"G:\Projects\PhotoManager\data")
     if not args.input:
         args.input = basepath / "input"
     if not args.output:
@@ -73,48 +71,52 @@ def main():
             tqdm.write(f"Skip already renamed file {Path(f).name} ({existing_hashes[idx]})")
             continue
 
-        # names logic
-        if filetype in [".mp4"]:
-            response = Path(f).stem
-        else:
-            acceptable = False
-            count = 0
-            while not acceptable:
-                response = ai_content.generate_filename(f, ai_content.describe_content)
-
-                if name_methods.is_acceptable_name(response):
-                    acceptable = True
-                elif count > 10:
-                    raise Exception(f"Couldnt guess name for file {f}")
-                else:
-                    count += 1
-                    logger.info(f"Incorrect name for {Path(f).name}: {response}  -  Will try again x{count}")
-
-        name = response + "_" + idx + filetype
-        message = f"Renamed {Path(f).name} -> {name}"
-
-        # time logic
-        if filetype not in [".mp4"] and len(time_methods.extract_date_from_exif(f)) != 19:
-            timestamp = time_methods.extract_timestamp(f)
-            if len(timestamp) == 19:
-                if filetype != ".png":
-                    sh.copy(f, args.output / name)
-                else:
-                    # png do not support timestamp injection with piexif, hence I save it as a jpg
-                    name = name.replace(filetype, ".jpg")
-                    Image.open(f).convert("RGB").save(args.output / name, quality=95)
-
-                time_methods.inject_time(args.output / name, timestamp)
-                message += f" (updated date to {timestamp})"
-            elif len(timestamp) > 0:
-                raise Exception(f, name, timestamp)
+        try:
+            # names logic
+            if filetype in [".mp4"]:
+                response = Path(f).stem
             else:
-                sh.copy(f, str(args.output) + "_notime/" + name)
-                message += " (missing timestamp)"
-        else:
-            sh.copy(f, args.output / name)
+                acceptable = False
+                count = 0
+                while not acceptable:
+                    response = ai_content.generate_filename(f, ai_content.describe_content)
 
-        tqdm.write(message)
+                    if name_methods.is_acceptable_name(response):
+                        acceptable = True
+                    elif count > 10:
+                        raise Exception(f"Couldnt guess name for file {f}")
+                    else:
+                        count += 1
+                        logger.info(f"Incorrect name for {Path(f).name}: {response}  -  Will try again x{count}")
+
+            name = response + "_" + idx + filetype
+            message = f"Renamed {Path(f).name} -> {name}"
+
+            # time logic
+            if filetype not in [".mp4"] and len(time_methods.extract_date_from_exif(f)) != 19:
+                timestamp = time_methods.extract_timestamp(f)
+                if len(timestamp) == 19:
+                    if filetype != ".png":
+                        sh.copy(f, args.output / name)
+                    else:
+                        # png do not support timestamp injection with piexif, hence I save it as a jpg
+                        name = name.replace(filetype, ".jpg")
+                        Image.open(f).convert("RGB").save(args.output / name, quality=95)
+
+                    time_methods.inject_time(args.output / name, timestamp)
+                    message += f" (updated date to {timestamp})"
+                elif len(timestamp) > 0:
+                    raise Exception(f, name, timestamp)
+                else:
+                    sh.copy(f, str(args.output) + "_notime/" + name)
+                    message += " (missing timestamp)"
+            else:
+                sh.copy(f, args.output / name)
+
+            tqdm.write(message)
+        except Exception as e:
+            sh.copy(f, str(args.output) + "_failed/" + Path(f).name)
+            print(f"Failed for file {f}:", e)
 
     # ---- finish up ----
 
