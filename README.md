@@ -37,8 +37,8 @@ Move all updated files to their target directory in database, for instance `data
 ## Pull from other databases
 This section is if you have multiple databases, for example one central and a backup one. 
 
-- 1. Go to the location of your central database
+- 1. Go to the location of your external database
 - 2. `cais scan .`
-- 3. `cais scan <external db>`
-- 4. `cais pull <external db>`
+- 3. `cais compare <central db>`
+- 4. `mover pull <central db>`
 

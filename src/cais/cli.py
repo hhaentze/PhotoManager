@@ -184,6 +184,7 @@ def handle_compare(args, db_path: Path, root_path: Path):
 
     summary_table.add_row("[-] Files in Current DB:", str(len(state1)))
     summary_table.add_row("[-] Files in Target DB:", str(len(state2)))
+    summary_table.add_row("[-] Unique files in Current DB:", str(len(report.missing_on_disk)))
     summary_table.add_row("[-] Unique files in Target DB:", str(len(report.new_files)))
 
     total_dupes = sum(len(g.duplicates) for g in report.duplicates.values())

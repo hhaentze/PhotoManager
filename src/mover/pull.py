@@ -5,6 +5,14 @@ from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 
 console = Console()
 
@@ -41,27 +49,46 @@ def pull_cais_files(db2_path: str, root_dir: str = ".", update: bool = False):
 
     # 5. Execute Update Sequence
     console.print(f"\n[bold red]WARNING:[/] Pulling from [cyan]{db2}[/] to [cyan]{root}[/]")
-    console.print("Operation starting in 3 seconds... Press Ctrl+C to cancel.")
+    console.print("Operation starting in 6 seconds... Press Ctrl+C to cancel.")
+
     try:
-        time.sleep(3)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            # Countdown task
+            countdown_task = progress.add_task("[yellow]Waiting to start...", total=60)
+            for _ in range(60):
+                time.sleep(0.1)
+                progress.advance(countdown_task)
+
+            # 6. Backup existing to .trash
+            trash_dir = Path(".trash") / datetime.now().strftime("%Y-%m-%d")
+            backup_task = progress.add_task("[blue]Backing up existing files...", total=len(existing_targets))
+
+            for p in existing_targets:
+                trash_target = trash_dir / p
+                trash_target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(root / p, trash_target)
+                progress.advance(backup_task)
+
+            # 7. Copy from db2 to root
+            copy_task = progress.add_task("[green]Copying files to root...", total=len(rel_paths))
+            copied = 0
+
+            for p in rel_paths:
+                dest = root / p
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(db2 / p, dest)
+                copied += 1
+                progress.advance(copy_task)
+
     except KeyboardInterrupt:
         console.print("\n[yellow]Operation cancelled by user.[/]")
         return
-
-    # 6. Backup existing to .trash
-    trash_dir = Path(".trash") / datetime.now().strftime("%Y-%m-%d")
-    for p in existing_targets:
-        trash_target = trash_dir / p
-        trash_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(root / p, trash_target)
-
-    # 7. Copy from db2 to root
-    copied = 0
-    for p in rel_paths:
-        dest = root / p
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(db2 / p, dest)
-        copied += 1
 
     # 8. Summary statistics
     console.print("\n[bold green]Update Successful![/bold green]")
