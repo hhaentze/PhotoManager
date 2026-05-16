@@ -279,7 +279,7 @@ def compare_dbs(state1: Dict[str, DataPoint], state2: Dict[str, DataPoint]) -> A
         dp1 = state1.get(path2)
 
         # Categorize updates vs unchanged
-        if dp1 == dp2:
+        if dp1 is not None and dp1.hash == dp2.hash and dp1.size == dp2.size and dp1.phash == dp2.phash:
             report.on_disk.append((path2, dp2.hash, dp2.phash))
         else:
             report.to_upsert.append((path2, dp2.hash, dp2.size, dp2.mtime))
