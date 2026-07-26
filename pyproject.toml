@@ -3,7 +3,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-requires-python = "==3.12.*"
+requires-python = ">=3.11"
 
 name = "PhotoManager"
 version = "1.0.0"
@@ -24,13 +24,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "ruff",
-    "ruff[jupyter]",
     "mypy",          # static typechecks
     "nbqa",          # Tool to run linters on notebooks
     "types-tqdm",
     "pytest",
 ]
-delview = ["PySide6", "opencv-python", "Send2Trash"]
+# GUI tools (delview, timeInject) share these; timeInject also needs the
+# external `exiftool` binary, which is not a pip package.
+gui = ["PySide6", "opencv-python", "Send2Trash"]
 
 [project.scripts]
 cais = "cais.cli:main"
@@ -52,7 +53,9 @@ target-version = "py311"
 exclude = [".git", ".ruff_cache", "__pycache__", "build", "dist", "*.egg-info"]
 
 [tool.ruff.lint]
-extend-select = ["I"]     # enable import sorting
+# Pin the rule set explicitly so lint is stable across ruff releases
+# (ruff's default set changes between versions).
+select = ["E", "F", "I"]  # pycodestyle errors, pyflakes, import sorting
 ignore = ["E501", "E741"] # ignore line-length, ambitious variable names
 
 

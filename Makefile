@@ -4,27 +4,27 @@ ci: lint type test
 
 # Installation
 install:
-	pip install -e .
+	uv sync
 
 install-dev:
-	pip install -e ".[dev]"
+	uv sync --extra dev
 
-# Linting 
+# Linting
 lint:
-	ruff check src tests
-	ruff format --check src tests
+	uv run ruff check src tests
+	uv run ruff format --check src tests
 
 # Formatting
 format:
-	ruff check --select I,F401 --fix src tests
-	ruff format src tests
+	uv run ruff check --select I,F401 --fix src tests
+	uv run ruff format src tests
 
 type:
-	mypy src
+	uv run mypy src
 
 # Testing
 test:
-	pytest
+	uv run pytest
 
 # Cleaning (Cross-platform via Python)
 clean:

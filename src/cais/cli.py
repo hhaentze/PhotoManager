@@ -16,7 +16,7 @@ from photomanager.common.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def format_size(size_bytes: int) -> str:
+def format_size(size_bytes: float) -> str:
     """Converts bytes to a human-readable format."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_bytes < 1024.0:
