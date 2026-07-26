@@ -111,15 +111,14 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
         report = analyzer.analyze(results)
 
         # 4. Print Summary UI
-        console.print(
-            summary_table(
-                [
-                    ("[-] Unchanged files:", str(len(report.on_disk))),
-                    ("[-] New/Modified files to hash:", str(len(report.to_upsert))),
-                    ("[-] Missing files:", str(len(report.missing_on_disk))),
-                ]
-            )
-        )
+        rows = [
+            ("[-] Unchanged files:", str(len(report.on_disk))),
+            ("[-] New/Modified files to hash:", str(len(report.to_upsert))),
+            ("[-] Missing files:", str(len(report.missing_on_disk))),
+        ]
+        if report.failed:
+            rows.append(("[!] Unreadable files (skipped):", str(len(report.failed))))
+        console.print(summary_table(rows))
 
         # 5. Execute DB Updates
         if dry_run:
