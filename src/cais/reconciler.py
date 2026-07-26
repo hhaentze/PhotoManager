@@ -7,16 +7,10 @@ from typing import Dict, Iterator, List, Optional, Tuple
 import blake3  # type: ignore
 import imagehash  # type: ignore
 from PIL import Image, UnidentifiedImageError  # type: ignore
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from cais.db import DataPoint, DuplicateGroup
+from photomanager.common.console import make_progress
 
 logger = logging.getLogger(__name__)
 
@@ -134,13 +128,7 @@ class ScanAnalyzer:
         # PHASE 2: Hashing
         needs_hashing_count = len(list(filter(lambda r: not r.hash_in_db, results)))
         if needs_hashing_count:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
+            with make_progress() as progress:
                 hash_task = progress.add_task("[green]Hashing new/modified files...", total=needs_hashing_count)
 
                 for r in results:
@@ -163,13 +151,7 @@ class ScanAnalyzer:
         if do_perceptual:
             needs_phashing_count = len(list(filter(lambda r: not r.phash_in_db, results)))
             if needs_phashing_count:
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(),
-                    TaskProgressColumn(),
-                    TimeRemainingColumn(),
-                ) as progress:
+                with make_progress() as progress:
                     phash_task = progress.add_task(
                         "[magenta]Calculating perceptual hashes...", total=needs_phashing_count
                     )

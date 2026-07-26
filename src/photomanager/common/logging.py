@@ -16,47 +16,26 @@ class LevelBasedFormatter(logging.Formatter):
             logging.CRITICAL: "[CRITICAL] %(asctime)s %(filename)s:%(lineno)d - %(message)s",
         }
 
-        # Set date format to match your original
         self.date_format = "%H:%M:%S"
 
     def format(self, record):
-        # Get the format string for this log level
         format_string = self.formats.get(record.levelno, self.formats[logging.INFO])
-
-        # Create a new formatter with the appropriate format
         formatter = logging.Formatter(format_string, self.date_format)
-
         return formatter.format(record)
 
 
-def setup_logging(name: str, level=logging.INFO):
-    # Get the root logger
-    root_logger = logging.getLogger(name)
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure the root logger with the level-based formatter.
+
+    Callers should obtain their own logger via ``logging.getLogger(__name__)``.
+    """
+    root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
     # Clear any existing handlers (important to avoid duplicates)
     root_logger.handlers.clear()
 
-    # Create console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(level)
-
-    # Apply custom formatter
-    formatter = LevelBasedFormatter()
-    console_handler.setFormatter(formatter)
-
-    # Add handler to root logger
+    console_handler.setFormatter(LevelBasedFormatter())
     root_logger.addHandler(console_handler)
-
-    return root_logger
-
-
-# Test the setup
-if __name__ == "__main__":
-    logger = setup_logging(__name__)
-
-    logger.debug("This is a debug message")  # Won't show because level is INFO
-    logger.info("This is an info message")
-    logger.warning("This is a warning message")
-    logger.error("This is an error message")
-    logger.critical("This is a critical message")
