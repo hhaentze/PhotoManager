@@ -1,6 +1,11 @@
 # PhotoManager
 > A suite for intelligent, safe photo backup and organization.
 
+[![CI](https://github.com/hhaentze/PhotoManager/actions/workflows/ci.yml/badge.svg)](https://github.com/hhaentze/PhotoManager/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+
 PhotoManager centralizes photos from many sources (phone camera, WhatsApp,
 other devices) into one **year-based library** of **uniquely-named, de-duplicated**
 files, and makes incremental backups to other drives pull **only genuinely new files**.
