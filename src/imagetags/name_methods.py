@@ -1,5 +1,6 @@
 import hashlib
 import os
+import shutil
 import string
 import subprocess
 import tempfile
@@ -48,7 +49,12 @@ def remove_metadata_and_calculate_hash(file_path, hash_algorithm="md5"):
 
         try:
             # FFmpeg command to remove metadata
-            ffmpeg_path = r"C:\Users\Hartmut\miniforge3\envs\ImageTags\Library\bin\ffmpeg.exe"
+            ffmpeg_path = os.environ.get("PHOTOMANAGER_FFMPEG") or shutil.which("ffmpeg")
+            if not ffmpeg_path:
+                raise RuntimeError(
+                    "ffmpeg not found. Install it and ensure it is on PATH, "
+                    "or set the PHOTOMANAGER_FFMPEG environment variable."
+                )
             subprocess.run(
                 [ffmpeg_path, "-y", "-i", file_path, "-map", "0", "-map_metadata", "-1", "-c", "copy", temp_file_path],
                 check=True,

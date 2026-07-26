@@ -5,6 +5,7 @@ Renames photos based on their content description from a visual language model.
 
 import argparse
 import glob
+import os
 import shutil as sh
 import sys
 from pathlib import Path
@@ -42,7 +43,7 @@ def main():
     parser = setup_argparse()
     args = parser.parse_args()
 
-    basepath = Path(r"G:\Projects\PhotoManager\data")
+    basepath = Path(os.environ.get("PHOTOMANAGER_DATA", "data"))
     if not args.input:
         args.input = basepath / "input"
     if not args.output:
