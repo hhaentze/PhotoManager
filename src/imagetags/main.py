@@ -51,8 +51,8 @@ def run(
     # ---- start logic ----
 
     existing_files = glob.glob(str(output_dir / "*"))
-    existing_hashes = [Path(f).stem for f in existing_files if "_" in Path(f).stem]
-    existing_hashes = {name.split("_")[-1]: name for name in existing_hashes if len(name.split("_")[-1]) == 4}
+    renamed_stems = [Path(f).stem for f in existing_files if "_" in Path(f).stem]
+    existing_hashes = {name.split("_")[-1]: name for name in renamed_stems if len(name.split("_")[-1]) == 4}
     if existing_hashes:
         logger.info(f"Found {len(existing_hashes)} renamed files in target directory")
 

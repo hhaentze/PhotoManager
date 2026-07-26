@@ -7,10 +7,10 @@ from typing import Dict, List, Optional, Tuple
 
 @dataclass
 class DataPoint:
-    hash: str
+    hash: Optional[str]  # None until the file has been hashed
     phash: Optional[str]
     size: int
-    mtime: str
+    mtime: float
 
 
 @dataclass
@@ -92,7 +92,7 @@ class IndexDB:
             "size": total_size or 0,
         }
 
-    def upsert_files(self, file_data: List[Tuple[str, str, int, float]]) -> None:
+    def upsert_files(self, file_data: List[Tuple[str, Optional[str], int, float]]) -> None:
         """Batch inserts or updates files. Expected tuple: (path, hash, size, mtime)"""
         with self.conn:  # Context manager handles the transaction chunk
             self.conn.executemany(
@@ -111,7 +111,7 @@ class IndexDB:
                 [(row[0], row[1], row[3]) for row in file_data],
             )
 
-    def update_phashes(self, phash_data: List[Tuple[str, str]]) -> None:
+    def update_phashes(self, phash_data: List[Tuple[Optional[str], str]]) -> None:
         """Batch updates perceptual hashes for existing assets. Expected tuple: (hash, phash)"""
         with self.conn:
             self.conn.executemany(

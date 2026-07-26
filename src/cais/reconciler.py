@@ -47,7 +47,7 @@ def fast_scandir(root: str) -> Iterator[os.DirEntry]:
                 if entry.name.startswith("."):
                     continue
                 if entry.is_dir(follow_symlinks=False):
-                    directories.append(Path(entry.path))
+                    directories.append(entry.path)
                 elif entry.is_file(follow_symlinks=False):
                     yield entry
         except OSError:
@@ -57,18 +57,18 @@ def fast_scandir(root: str) -> Iterator[os.DirEntry]:
 
 @dataclass
 class ScanResult:
-    rel_path: str = None
-    in_db: bool = None
-    hash_in_db: bool = None
+    rel_path: str
+    in_db: Optional[bool] = None
+    hash_in_db: Optional[bool] = None
     phash_in_db: Optional[bool] = None
-    entry: DataPoint = None
+    entry: Optional[DataPoint] = None
 
 
 @dataclass
 class AnalysisReport:
-    on_disk: List[Tuple[str, str, str]] = field(default_factory=list)
-    to_upsert: List[Tuple[str, str, int, float]] = field(default_factory=list)  # path, hash, size, mtime
-    to_upsert_phash: List[Tuple[str, str]] = field(default_factory=list)  # hash, phash
+    on_disk: List[Tuple[str, Optional[str], Optional[str]]] = field(default_factory=list)
+    to_upsert: List[Tuple[str, Optional[str], int, float]] = field(default_factory=list)  # path, hash, size, mtime
+    to_upsert_phash: List[Tuple[Optional[str], str]] = field(default_factory=list)  # hash, phash
     missing_on_disk: List[str] = field(default_factory=list)  # paths
     duplicates: Dict[str, DuplicateGroup] = field(default_factory=dict)
     new_files: List[str] = field(default_factory=list)  # path
@@ -79,7 +79,7 @@ class ScanAnalyzer:
         self.root_dir = root_dir
         self.scan_dir = scan_dir
         self.known_state = known_state
-        self.updated_state = {}
+        self.updated_state: Dict[str, DataPoint] = {}
         self.is_external = root_dir != scan_dir
 
     def scan(self, do_perceptual: bool = False) -> List[ScanResult]:
@@ -95,7 +95,7 @@ class ScanAnalyzer:
         ) as progress:
             scan_task = progress.add_task("[cyan]Scanning directory structure...", total=None)
 
-            for entry in fast_scandir(self.scan_dir):
+            for entry in fast_scandir(str(self.scan_dir)):
                 rel_path = Path(os.path.relpath(entry.path, self.scan_dir)).as_posix()
                 result = ScanResult(rel_path=rel_path)
                 try:
@@ -133,6 +133,7 @@ class ScanAnalyzer:
 
                 for r in results:
                     if r.hash_in_db is None or not r.hash_in_db:
+                        assert r.entry is not None
                         try:
                             file_hash = compute_blake3(self.scan_dir / r.rel_path)
                             r.entry.hash = file_hash
@@ -158,6 +159,7 @@ class ScanAnalyzer:
 
                     for r in results:
                         if not r.phash_in_db:
+                            assert r.entry is not None
                             try:
                                 file_phash = compute_phash(self.scan_dir / r.rel_path)
                                 r.entry.phash = file_phash
@@ -187,6 +189,7 @@ class ScanAnalyzer:
 
         for r in results:
             entry = r.entry
+            assert entry is not None
             if r.in_db:
                 report.on_disk.append((r.rel_path, entry.hash, entry.phash))
 
@@ -224,8 +227,8 @@ class ScanAnalyzer:
         # get completly new files
         all_files = set(r.rel_path for r in results)
         duplicated_files = set()
-        for entry in all_dupes.values():
-            paths = {d[0] for d in entry.duplicates}
+        for group in all_dupes.values():
+            paths = {d[0] for d in group.duplicates}
             duplicated_files.update(paths)
 
         report.new_files = list(all_files - duplicated_files)
@@ -275,6 +278,7 @@ def compare_dbs(state1: Dict[str, DataPoint], state2: Dict[str, DataPoint]) -> A
             orig_path, match_type = phash_map[dp2.phash], "phash"
 
         if orig_path:
+            assert match_type is not None  # set together with orig_path above
             if orig_path not in report.duplicates:
                 report.duplicates[orig_path] = DuplicateGroup(original=orig_path, duplicates=[])
             report.duplicates[orig_path].duplicates.append((path2, match_type))
