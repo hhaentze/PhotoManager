@@ -1,5 +1,4 @@
 import shutil
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -46,18 +45,11 @@ def pull_cais_files(db2_path: str, root_dir: str = ".", update: bool = False):
         return
 
     # 5. Execute Update Sequence
-    console.print(f"\n[bold red]WARNING:[/] Pulling from [cyan]{db2}[/] to [cyan]{root}[/]")
-    console.print("Operation starting in 6 seconds... Press Ctrl+C to cancel.")
+    console.print(f"\n[bold red]Pulling[/] from [cyan]{db2}[/] to [cyan]{root}[/] ...")
     removed_dirs_count = 0
 
     try:
         with make_progress() as progress:
-            # Countdown task
-            countdown_task = progress.add_task("[yellow]Waiting to start...", total=60)
-            for _ in range(60):
-                time.sleep(0.1)
-                progress.advance(countdown_task)
-
             # Define Trash Directories
             trash_base = Path(".trash") / datetime.now().strftime("%Y-%m-%d")
             trash_modified = trash_base / "modified"

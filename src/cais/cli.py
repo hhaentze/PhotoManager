@@ -1,9 +1,9 @@
-import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
+import typer
 from rich.table import Table
 from rich.tree import Tree
 
@@ -141,78 +141,65 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
         db.close()
 
 
-def handle_compare(args, db_path: Path, root_path: Path):
-    db1 = get_db_or_exit(db_path)
-    db2_path = (Path(args.db2_path) / ".cais/.cais.db").resolve()
-
-    if not db2_path.exists():
-        console.print(f"[bold red]Error:[/bold red] Target database not found at {db2_path}")
-        sys.exit(1)
-
-    # Load DB2 in read-only mode implicitly by not calling init
-    db2 = IndexDB(db2_path)
-    try:
-        # Fetch states once
-        state1 = db1.get_known_state()
-        state2 = db2.get_known_state()
-
-        # Generate Report
-        report = compare_dbs(state1, state2)
-
-    finally:
-        db1.close()
-        db2.close()
-
-    # Print Summary UI
-    total_dupes = sum(len(g.duplicates) for g in report.duplicates.values())
-    console.print(
-        summary_table(
-            [
-                ("[-] Files in Current DB:", str(len(state1))),
-                ("[-] Files in Target DB:", str(len(state2))),
-                ("[-] Unique files in Current DB:", str(len(report.missing_on_disk))),
-                ("[-] Unique files in Target DB:", str(len(report.new_files))),
-                ("[-] Redundant files in Target DB:", str(total_dupes)),
-            ]
-        )
-    )
-
-    print_and_save_report(report, db_path.parent)
+app = typer.Typer(help="CAIS: Content-Addressed Indexing System for Media", no_args_is_help=True)
 
 
-# --- Command Handlers ---
+@app.callback()
+def _configure() -> None:
+    setup_logging(level=logging.INFO)
 
 
-def handle_init(args, db_file: Path, root_path: Path):
+def _db_paths() -> tuple[Path, Path]:
+    """Resolve the working directory and its .cais database file."""
+    root_path = Path.cwd()
+    db_dir = root_path / contract.CAIS_DIR
+    db_dir.mkdir(exist_ok=True)
+    return root_path, db_dir / ".cais.db"
+
+
+@app.command()
+def init(name: str = typer.Argument(..., help="Name for this database instance (e.g., 'main')")) -> None:
+    """Initialize a new database here."""
+    root_path, db_file = _db_paths()
     if db_file.exists():
         console.print(f"[bold red]Error:[/bold red] Database already exists at {db_file}")
-        sys.exit(1)
+        raise typer.Exit(1)
 
-    console.print(f"[*] Initializing database [bold cyan]'{args.name}'[/bold cyan] at {root_path}...")
-    db = IndexDB(db_file, args.name)
+    console.print(f"[*] Initializing database [bold cyan]'{name}'[/bold cyan] at {root_path}...")
+    db = IndexDB(db_file, name)
     db.close()
     console.print("[bold green]✓ Initialization complete.[/bold green]")
 
 
-def handle_scan(args, db_file: Path, root_path: Path):
+@app.command()
+def scan(
+    path: Optional[Path] = typer.Argument(None, help="External path to check"),
+    perceptual: bool = typer.Option(False, "--perceptual", help="Calculate perceptual hashes for images"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Commit changes to the database (default: dry run)"),
+) -> None:
+    """Scan for changes. Writes to the database only when --yes is given."""
+    root_path, db_file = _db_paths()
 
-    if args.update and args.path is not None:
+    if yes and path is not None:
         console.print("[bold red]Error:[/bold red] External Paths cannot be added to database.")
-        sys.exit(1)
+        raise typer.Exit(1)
 
-    scan_dir = root_path if args.path is None else Path(args.path).resolve()
+    scan_dir = root_path if path is None else path.resolve()
 
     console.print("[bold]Scanning for differences...[/bold]")
     run_scan(
         db_path=db_file,
         root_dir=root_path,
         scan_dir=scan_dir,
-        dry_run=not args.update,
-        do_perceptual=args.perceptual,
+        dry_run=not yes,
+        do_perceptual=perceptual,
     )
 
 
-def handle_status(args, db_file: Path, root_path: Path):
+@app.command()
+def status() -> None:
+    """Print database statistics."""
+    _, db_file = _db_paths()
     db = get_db_or_exit(db_file)
     try:
         stats = db.get_status_stats()
@@ -235,40 +222,47 @@ def handle_status(args, db_file: Path, root_path: Path):
         db.close()
 
 
+@app.command()
+def compare(
+    target: str = typer.Argument(..., help="Path to the external directory managed by cais"),
+) -> None:
+    """Compare this DB with another DB without scanning."""
+    _, db_file = _db_paths()
+    db1 = get_db_or_exit(db_file)
+    db2_file = (Path(target) / contract.CAIS_DIR / ".cais.db").resolve()
+
+    if not db2_file.exists():
+        console.print(f"[bold red]Error:[/bold red] Target database not found at {db2_file}")
+        raise typer.Exit(1)
+
+    # Load DB2 in read-only mode implicitly by not calling init
+    db2 = IndexDB(db2_file)
+    try:
+        state1 = db1.get_known_state()
+        state2 = db2.get_known_state()
+        report = compare_dbs(state1, state2)
+    finally:
+        db1.close()
+        db2.close()
+
+    total_dupes = sum(len(g.duplicates) for g in report.duplicates.values())
+    console.print(
+        summary_table(
+            [
+                ("[-] Files in Current DB:", str(len(state1))),
+                ("[-] Files in Target DB:", str(len(state2))),
+                ("[-] Unique files in Current DB:", str(len(report.missing_on_disk))),
+                ("[-] Unique files in Target DB:", str(len(report.new_files))),
+                ("[-] Redundant files in Target DB:", str(total_dupes)),
+            ]
+        )
+    )
+
+    print_and_save_report(report, db_file.parent)
+
+
 def main():
-    setup_logging(level=logging.INFO)
-
-    parser = argparse.ArgumentParser(description="CAIS: Content-Addressed Indexing System for Media")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # Mode 1: Self-Management
-    parser_init = subparsers.add_parser("init", help="Initialize a new database here")
-    parser_init.add_argument("name", help="Name for this database instance (e.g., 'main')")
-    parser_init.set_defaults(func=handle_init)
-
-    parser_scan = subparsers.add_parser("scan", help="Check for changes without updating DB")
-    parser_scan.add_argument("path", nargs="?", default=None, help="External path to check")
-    parser_scan.add_argument("--perceptual", action="store_true", help="Calculate perceptual hashes for images")
-    parser_scan.add_argument("--update", action="store_true", help="Update the database")
-    parser_scan.set_defaults(func=handle_scan)
-
-    parser_status = subparsers.add_parser("status", help="Print database statistics")
-    parser_status.set_defaults(func=handle_status)
-
-    parser_compare = subparsers.add_parser("compare", help="Compare this DB with another DB without scanning")
-    parser_compare.add_argument("db2_path", help="Path to the external direcotry managed by cais")
-    parser_compare.set_defaults(func=handle_compare)
-
-    args = parser.parse_args()
-
-    # Paths
-    root_path = Path.cwd()
-    db_dir = Path(".cais")
-    db_dir.mkdir(exist_ok=True)
-    db_file = root_path / db_dir / ".cais.db"
-
-    # Execute the bound function dynamically
-    args.func(args, db_file, root_path)
+    app()
 
 
 if __name__ == "__main__":
