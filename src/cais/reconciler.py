@@ -72,6 +72,7 @@ class AnalysisReport:
     missing_on_disk: List[str] = field(default_factory=list)  # paths
     duplicates: Dict[str, DuplicateGroup] = field(default_factory=dict)
     new_files: List[str] = field(default_factory=list)  # path
+    failed: List[str] = field(default_factory=list)  # paths that could not be hashed
 
 
 class ScanAnalyzer:
@@ -190,6 +191,12 @@ class ScanAnalyzer:
         for r in results:
             entry = r.entry
             assert entry is not None
+            if entry.hash is None:
+                # File could not be read/hashed (e.g. permissions, or a cloud
+                # "online-only" placeholder). Skip it so a null hash never
+                # reaches the database; it will be retried on the next scan.
+                report.failed.append(r.rel_path)
+                continue
             if r.in_db:
                 report.on_disk.append((r.rel_path, entry.hash, entry.phash))
 
@@ -224,8 +231,8 @@ class ScanAnalyzer:
         all_dupes = self._group_duplicates_with_representative(phash_only_on_disk, phash_to_path, "phash", exact_dupes)
         report.duplicates = all_dupes
 
-        # get completly new files
-        all_files = set(r.rel_path for r in results)
+        # get completly new files (excluding files that could not be hashed)
+        all_files = set(r.rel_path for r in results) - set(report.failed)
         duplicated_files = set()
         for group in all_dupes.values():
             paths = {d[0] for d in group.duplicates}

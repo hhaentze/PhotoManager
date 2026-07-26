@@ -1,8 +1,9 @@
 import sqlite3
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 
 @dataclass
@@ -43,7 +44,7 @@ class IndexDB:
         self.conn.executescript("""
             PRAGMA foreign_keys = ON;
             CREATE TABLE IF NOT EXISTS assets (
-                hash TEXT PRIMARY KEY,
+                hash TEXT NOT NULL PRIMARY KEY,
                 size INTEGER NOT NULL,
                 phash TEXT
             );
@@ -56,6 +57,23 @@ class IndexDB:
             CREATE INDEX IF NOT EXISTS idx_locations_hash ON locations(hash);
             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT);
         """)
+
+    @contextmanager
+    def _transaction(self) -> Iterator[None]:
+        """Run a block as one atomic transaction.
+
+        The connection is opened in autocommit mode (isolation_level=None), so
+        ``with self.conn`` does not actually roll back on error; this makes batch
+        writes atomic instead of leaving partial state behind.
+        """
+        self.conn.execute("BEGIN")
+        try:
+            yield
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        else:
+            self.conn.execute("COMMIT")
 
     def set_metadata(self, key: str, value: str) -> None:
         """Stores arbitrary key-value pairs (like the db name)."""
@@ -94,7 +112,7 @@ class IndexDB:
 
     def upsert_files(self, file_data: List[Tuple[str, Optional[str], int, float]]) -> None:
         """Batch inserts or updates files. Expected tuple: (path, hash, size, mtime)"""
-        with self.conn:  # Context manager handles the transaction chunk
+        with self._transaction():
             self.conn.executemany(
                 """
                 INSERT INTO assets (hash, size) VALUES (?, ?)
@@ -113,7 +131,7 @@ class IndexDB:
 
     def update_phashes(self, phash_data: List[Tuple[Optional[str], str]]) -> None:
         """Batch updates perceptual hashes for existing assets. Expected tuple: (hash, phash)"""
-        with self.conn:
+        with self._transaction():
             self.conn.executemany(
                 """
                 UPDATE assets SET phash = ? WHERE hash = ?;
@@ -123,7 +141,7 @@ class IndexDB:
 
     def remove_paths(self, paths: List[str]) -> None:
         """Removes paths from the index and cleans up orphaned assets."""
-        with self.conn:
+        with self._transaction():
             self.conn.executemany("DELETE FROM locations WHERE path = ?;", [(p,) for p in paths])
             self.conn.execute("""
                 DELETE FROM assets WHERE hash NOT IN (SELECT hash FROM locations);
