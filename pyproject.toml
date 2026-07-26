@@ -69,7 +69,10 @@ ignore = ["E501", "E741"] # ignore line-length, ambitious variable names
 ############### Type Checking ###############
 
 [tool.mypy]
-python_version = "3.11"
+# Type-check against 3.12 (the CI runtime) so modern dependency stubs parse.
+# Runtime support is still >=3.11 (see requires-python); the code uses no
+# 3.12-only syntax.
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true # Crucial for ML libs (torch, monai) lacking stubs
