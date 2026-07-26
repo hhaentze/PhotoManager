@@ -1,6 +1,6 @@
 .PHONY: install install-dev lint format format-nbs test clean help
 
-ci: lint type
+ci: lint type test
 
 # Installation
 install:
@@ -21,6 +21,10 @@ format:
 
 type:
 	mypy src
+
+# Testing
+test:
+	pytest
 
 # Cleaning (Cross-platform via Python)
 clean:

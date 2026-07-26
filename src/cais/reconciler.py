@@ -254,7 +254,6 @@ class ScanAnalyzer:
 
         # Exact hash matches
         for h, path in duplicates:
-            print(h, path)
             original = look_up[h]  # exactly one match guaranteed
             entry = duplicate_map.setdefault(original, DuplicateGroup(original, []))
             entry.duplicates.append((path, match_type))
