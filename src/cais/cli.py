@@ -1,20 +1,19 @@
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
 from typing import Dict
 
-from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
 from cais.db import IndexDB
-from cais.logger import setup_logging
 from cais.reconciler import AnalysisReport, DuplicateGroup, ScanAnalyzer, compare_dbs
+from photomanager.common import contract
+from photomanager.common.console import console, summary_table
+from photomanager.common.logging import setup_logging
 
 logger = logging.getLogger(__name__)
-console = Console()
 
 
 def format_size(size_bytes: int) -> str:
@@ -52,7 +51,7 @@ def report_duplicates(duplicates: Dict[str, DuplicateGroup], output_dir: Path) -
 
     # --- Write unified log ---
     log_path = output_dir / "cais_duplicates.log"
-    json_path = output_dir / "cais_duplicates.json"
+    json_path = output_dir / contract.DUPLICATES
 
     with open(log_path, "w", encoding="utf-8") as f:
         for i, group in enumerate(duplicates.values(), start=1):
@@ -63,17 +62,8 @@ def report_duplicates(duplicates: Dict[str, DuplicateGroup], output_dir: Path) -
                 f.write(f"  Duplicate ({match_type}): {path}\n")
             f.write("\n")
 
-    # JSON (structured)
-    json_data = {
-        group.original or f"group_{i}": {
-            "representative": group.original,
-            "duplicates": group.duplicates,
-        }
-        for i, group in enumerate(duplicates.values())
-    }
-
-    with open(json_path, "w", encoding="utf-8") as jf:
-        json.dump(json_data, jf, indent=4)
+    # JSON (structured, via the shared contract)
+    contract.dump(json_path, contract.build_duplicates_payload(duplicates.values()))
 
     # --- Rich Tree (if small enough) ---
     if total_redundant < 30:
@@ -98,16 +88,10 @@ def report_duplicates(duplicates: Dict[str, DuplicateGroup], output_dir: Path) -
 
 
 def print_and_save_report(report: AnalysisReport, output_dir: Path) -> None:
-
-    with open(output_dir / "cais_missing_on_disk.json", "w") as f:
-        json.dump(report.missing_on_disk, f, indent=4)
-
-    with open(output_dir / "cais_new_files.json", "w") as f:
-        json.dump(report.new_files, f, indent=4)
-
-    with open(output_dir / "cais_new_and_modified_files.json", "w") as f:
-        new_and_modified_files = [f for f, _, _, _ in report.to_upsert]
-        json.dump(new_and_modified_files, f, indent=4)
+    contract.dump(output_dir / contract.MISSING_ON_DISK, report.missing_on_disk)
+    contract.dump(output_dir / contract.NEW_FILES, report.new_files)
+    new_and_modified_files = [f for f, _, _, _ in report.to_upsert]
+    contract.dump(output_dir / contract.NEW_AND_MODIFIED, new_and_modified_files)
 
     report_duplicates(report.duplicates, output_dir)
     console.print(f"[dim]* Details written to:\n  - {output_dir.resolve()}[/dim]")
@@ -127,13 +111,15 @@ def run_scan(db_path: Path, root_dir: Path, scan_dir: Path, dry_run: bool = True
         report = analyzer.analyze(results)
 
         # 4. Print Summary UI
-        summary_table = Table(show_header=False, box=None)
-        summary_table.add_column("Metric", style="bold")
-        summary_table.add_column("Value", style="cyan")
-        summary_table.add_row("[-] Unchanged files:", str(len(report.on_disk)))
-        summary_table.add_row("[-] New/Modified files to hash:", str(len(report.to_upsert)))
-        summary_table.add_row("[-] Missing files:", str(len(report.missing_on_disk)))
-        console.print(summary_table)
+        console.print(
+            summary_table(
+                [
+                    ("[-] Unchanged files:", str(len(report.on_disk))),
+                    ("[-] New/Modified files to hash:", str(len(report.to_upsert))),
+                    ("[-] Missing files:", str(len(report.missing_on_disk))),
+                ]
+            )
+        )
 
         # 5. Execute DB Updates
         if dry_run:
@@ -178,19 +164,18 @@ def handle_compare(args, db_path: Path, root_path: Path):
         db2.close()
 
     # Print Summary UI
-    summary_table = Table(show_header=False, box=None)
-    summary_table.add_column("Metric", style="bold")
-    summary_table.add_column("Value", style="cyan")
-
-    summary_table.add_row("[-] Files in Current DB:", str(len(state1)))
-    summary_table.add_row("[-] Files in Target DB:", str(len(state2)))
-    summary_table.add_row("[-] Unique files in Current DB:", str(len(report.missing_on_disk)))
-    summary_table.add_row("[-] Unique files in Target DB:", str(len(report.new_files)))
-
     total_dupes = sum(len(g.duplicates) for g in report.duplicates.values())
-    summary_table.add_row("[-] Redundant files in Target DB:", str(total_dupes))
-
-    console.print(summary_table)
+    console.print(
+        summary_table(
+            [
+                ("[-] Files in Current DB:", str(len(state1))),
+                ("[-] Files in Target DB:", str(len(state2))),
+                ("[-] Unique files in Current DB:", str(len(report.missing_on_disk))),
+                ("[-] Unique files in Target DB:", str(len(report.new_files))),
+                ("[-] Redundant files in Target DB:", str(total_dupes)),
+            ]
+        )
+    )
 
     print_and_save_report(report, db_path.parent)
 

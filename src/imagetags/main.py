@@ -5,6 +5,7 @@ Renames photos based on their content description from a visual language model.
 
 import argparse
 import glob
+import logging
 import os
 import shutil as sh
 import sys
@@ -14,7 +15,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from imagetags import ai_content, name_methods, time_methods
-from imagetags.logger import setup_logging
+from photomanager.common.logging import setup_logging
 
 
 def setup_argparse() -> argparse.ArgumentParser:
@@ -39,7 +40,8 @@ def validate_args(args: any) -> None:
 def main():
     """Main entry point."""
 
-    logger = setup_logging(__name__)
+    setup_logging()
+    logger = logging.getLogger(__name__)
     parser = setup_argparse()
     args = parser.parse_args()
 

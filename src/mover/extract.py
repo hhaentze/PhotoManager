@@ -1,10 +1,8 @@
-import json
 import shutil
 from pathlib import Path
 
-from rich.console import Console
-
-console = Console()
+from photomanager.common import contract
+from photomanager.common.console import console
 
 
 def extract_cais_files(source: str, json_path: str = ".cais/cais_new_files.json", target_dir: str = ".temp_store"):
@@ -20,8 +18,7 @@ def extract_cais_files(source: str, json_path: str = ".cais/cais_new_files.json"
         console.print(f"[bold red]Error:[/] Source directory '{source_dir}' not found.")
         return
 
-    with open(source_json, "r", encoding="utf-8") as f:
-        paths = json.load(f)
+    paths = contract.load(source_json)
 
     files = [source_dir / p for p in paths]
     existing_files = [p for p in files if p.is_file()]
