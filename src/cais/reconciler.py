@@ -29,11 +29,14 @@ def compute_blake3(file_path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 def compute_phash(file_path: Path) -> str | None:
     """Safely calculates a perceptual hash for valid image files."""
-    try:
-        with Image.open(file_path) as img:
-            return str(imagehash.phash(img))
-    except (UnidentifiedImageError, OSError, ValueError) as e:
-        logger.debug(f"Could not calculate pHash for {file_path}: {e}")
+    if file_path.suffix.lower() in IMAGE_EXTENSIONS:
+        try:
+            with Image.open(file_path) as img:
+                return str(imagehash.phash(img))
+        except (UnidentifiedImageError, OSError, ValueError) as e:
+            logger.warning(f"Could not calculate pHash for {file_path}: {e}")
+            return None
+    else:
         return None
 
 
@@ -123,7 +126,7 @@ class ScanAnalyzer:
                 progress.update(scan_task, description=f"[cyan]Scanning directory... found {len(results)} files")
 
         known_hashes = {info.hash for info in self.updated_state.values()}
-        known_phashes = {info.phash for info in self.updated_state.values()}
+        known_phashes = {info.phash for info in self.updated_state.values()} - {None}
         hash_phash_map = {info.hash: info.phash for info in self.updated_state.values()}
 
         # PHASE 2: Hashing
@@ -157,7 +160,6 @@ class ScanAnalyzer:
                     phash_task = progress.add_task(
                         "[magenta]Calculating perceptual hashes...", total=needs_phashing_count
                     )
-
                     for r in results:
                         if not r.phash_in_db:
                             assert r.entry is not None
