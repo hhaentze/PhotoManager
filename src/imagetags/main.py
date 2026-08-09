@@ -5,11 +5,9 @@ Renames photos based on their content description from a visual language model.
 
 import glob
 import logging
-import os
 import shutil as sh
 import sys
 from pathlib import Path
-from typing import Optional
 
 import typer
 from PIL import Image
@@ -30,21 +28,18 @@ def validate_input(input_dir: Path) -> None:
 
 
 def run(
-    input_dir: Optional[Path] = typer.Option(None, "--input", "-i", help="Input folder containing images"),
-    output_dir: Optional[Path] = typer.Option(None, "--output", "-o", help="Output folder for renamed images"),
+    input_dir: Path = typer.Option(..., "--input", "-i", help="Input folder containing images"),
+    output_dir: Path = typer.Option(..., "--output", "-o", help="Output folder for renamed images"),
 ) -> None:
     """Rename photos based on content using Ollama vision models."""
 
     setup_logging()
     logger = logging.getLogger(__name__)
 
-    basepath = Path(os.environ.get("PHOTOMANAGER_DATA", "data"))
-    if input_dir is None:
-        input_dir = basepath / "input"
-    if output_dir is None:
-        output_dir = basepath / "output"
-
     validate_input(input_dir)
+    if not output_dir.exists():
+        output_dir.mkdir()
+
     logger.info(f"Load from {input_dir}")
     logger.info(f"Save to {output_dir}")
 
@@ -104,14 +99,18 @@ def run(
                 elif len(timestamp) > 0:
                     raise Exception(f, name, timestamp)
                 else:
-                    sh.copy(f, str(output_dir) + "_notime/" + name)
+                    notime_dir = output_dir / "notime"
+                    notime_dir.mkdir(exist_ok=True)
+                    sh.copy(f, notime_dir / name)
                     message += " (missing timestamp)"
             else:
                 sh.copy(f, output_dir / name)
 
             tqdm.write(message)
         except Exception as e:
-            sh.copy(f, str(output_dir) + "_failed/" + Path(f).name)
+            failed_dir = output_dir / "failed"
+            failed_dir.mkdir(exist_ok=True)
+            sh.copy(f, failed_dir / Path(f).name)
             print(f"Failed for file {f}:", e)
 
     # ---- finish up ----
